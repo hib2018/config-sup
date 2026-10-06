@@ -80,45 +80,61 @@ func fieldsFromJSON(value any) []field {
 	return result
 }
 
-func discover(root string) ([]source, error) {
+func configPath(path string) bool {
+	parts := strings.Split(path, "/")
+	if len(parts) > 6 || !configName.MatchString(parts[len(parts)-1]) {
+		return false
+	}
+	for _, part := range parts[:len(parts)-1] {
+		if slices.Contains([]string{".git", "node_modules", "vendor", "dist", "build"}, part) {
+			return false
+		}
+	}
+	return true
+}
+
+func discoverGit(ctx context.Context, root string) ([]source, error) {
 	files := []source{}
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+	paths, err := gitCommand(ctx, root, "ls-tree", "-r", "-z", "--name-only", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range strings.Split(string(paths), "\x00") {
+		if len(files) >= 30 {
+			break
+		}
+		if !configPath(name) {
+			continue
+		}
+		data, err := gitCommand(ctx, root, "show", "HEAD:"+name)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		depth := strings.Count(rel, string(os.PathSeparator))
-		if entry.IsDir() {
-			if rel != "." && (depth >= 5 || entry.Name() == ".git" || entry.Name() == "node_modules" || entry.Name() == "vendor" || entry.Name() == "dist" || entry.Name() == "build" || len(files) >= 30) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if len(files) >= 30 || !entry.Type().IsRegular() || !configName.MatchString(entry.Name()) {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil || info.Size() > 100_000 {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil || len(data) > 100_000 {
-			return nil
+		if len(data) > 100_000 {
+			continue
 		}
 		var value any
 		if json.Unmarshal(data, &value) != nil {
-			return nil
+			continue
 		}
-		fields := fieldsFromJSON(value)
-		if len(fields) > 0 {
-			files = append(files, source{filepath.ToSlash(rel), fields})
+		if fields := fieldsFromJSON(value); len(fields) > 0 {
+			files = append(files, source{name, fields})
 		}
-		return nil
-	})
-	return files, err
+	}
+	return files, nil
+}
+
+func gitCommand(ctx context.Context, root string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_LFS_SKIP_SMUDGE=1")
+	output, err := cmd.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("GitHub からの取得が30秒以内に終わりませんでした: %w", ctx.Err())
+		}
+		return nil, fmt.Errorf("git の取得に失敗しました: %w", err)
+	}
+	return output, nil
 }
 
 func analyze(input string, useAgent bool) (any, error) {
@@ -134,17 +150,10 @@ func analyze(input string, useAgent bool) (any, error) {
 	dest := filepath.Join(dir, "repo")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	for _, args := range [][]string{
-		{"-c", "protocol.file.allow=never", "clone", "--quiet", "--depth=1", "--no-checkout", "--filter=blob:none", repo, dest},
-		{"-C", dest, "-c", "core.hooksPath=/dev/null", "checkout", "--quiet", "HEAD", "--", "."},
-	} {
-		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_LFS_SKIP_SMUDGE=1")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("git の取得に失敗しました: %w: %.200s", err, output)
-		}
+	if _, err := gitCommand(ctx, ".", "-c", "protocol.file.allow=never", "clone", "--quiet", "--depth=1", "--no-checkout", "--filter=blob:none", repo, dest); err != nil {
+		return nil, err
 	}
-	files, err := discover(dest)
+	files, err := discoverGit(ctx, dest)
 	if err != nil {
 		return nil, err
 	}

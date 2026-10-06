@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -33,13 +35,27 @@ func TestFields(t *testing.T) {
 	}
 }
 
-func TestDiscover(t *testing.T) {
+func TestDiscoverGit(t *testing.T) {
 	root := t.TempDir()
-	os.WriteFile(filepath.Join(root, "settings.json"), []byte(`{"enabled":true}`), 0600)
+	for _, args := range [][]string{{"init", "-q", root}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git: %s %v", out, err)
+		}
+	}
+	os.MkdirAll(filepath.Join(root, ".zed"), 0700)
+	os.WriteFile(filepath.Join(root, ".zed", "settings.json"), []byte(`{"enabled":true}`), 0600)
 	os.WriteFile(filepath.Join(root, "other.json"), []byte(`{"ignored":true}`), 0600)
-	files, err := discover(root)
-	if err != nil || len(files) != 1 || files[0].File != "settings.json" {
+	for _, args := range [][]string{{"add", "."}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"}} {
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git: %s %v", out, err)
+		}
+	}
+	files, err := discoverGit(context.Background(), root)
+	if err != nil || len(files) != 1 || files[0].File != ".zed/settings.json" {
 		t.Fatalf("%#v %v", files, err)
+	}
+	if configPath("node_modules/a/settings.json") || configPath("a/b/c/d/e/f/settings.json") {
+		t.Fatal("accepted excluded path")
 	}
 }
 
