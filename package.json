@@ -1,0 +1,14 @@
+{
+  "name": "config-sup",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "npm run build && node server.js",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
