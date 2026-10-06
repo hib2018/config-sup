@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "npm run build && node server.js",
-    "test": "node --test"
+    "start": "npm run build && go run ./src",
+    "test": "go test ./src"
   },
   "devDependencies": {
     "typescript": "^5.9.3"
