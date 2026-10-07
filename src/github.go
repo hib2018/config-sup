@@ -14,9 +14,16 @@ import (
 )
 
 type field struct {
-	Path  []string `json:"path"`
-	Type  string   `json:"type"`
-	Value any      `json:"value"`
+	Path    []string `json:"path"`
+	Type    string   `json:"type"`
+	Value   any      `json:"value"`
+	Choices []any    `json:"choices,omitempty"`
+	Target  *target  `json:"target,omitempty"`
+}
+type target struct {
+	ID   int      `json:"id"`
+	Path []string `json:"path"`
+	File string   `json:"file,omitempty"`
 }
 type source struct {
 	File   string  `json:"file"`
@@ -42,17 +49,21 @@ func githubRepo(input string) (string, error) {
 	return "https://github.com/" + parts[0] + "/" + repo, nil
 }
 
-func analyze(input string, useAgent bool) (any, error) {
+func analyze(input string, useAgent bool) (any, *plan, error) {
 	if !useAgent {
-		return nil, errors.New("解析にはPiのモデルが必要です。送信内容を確認し、画面で同意してください")
+		return nil, nil, errors.New("解析にはPiのモデルが必要です。送信内容を確認し、画面で同意してください")
 	}
 	repo, err := githubRepo(input)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	local, err := scanLocal()
+	if err != nil {
+		return nil, nil, err
 	}
 	dir, err := os.MkdirTemp("", "config-sup-")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer os.RemoveAll(dir)
 	dest := filepath.Join(dir, "repo")
@@ -62,18 +73,13 @@ func analyze(input string, useAgent bool) (any, error) {
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_LFS_SKIP_SMUDGE=1")
 	if _, err := cmd.Output(); err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("GitHub からの取得が30秒以内に終わりませんでした: %w", ctx.Err())
+			return nil, nil, fmt.Errorf("GitHub からの取得が30秒以内に終わりませんでした: %w", ctx.Err())
 		}
-		return nil, fmt.Errorf("git の取得に失敗しました: %w", err)
+		return nil, nil, fmt.Errorf("git の取得に失敗しました: %w", err)
 	}
-	files, descriptions, err := inspectRepo(dest)
+	files, descriptions, err := inspectRepo(dest, local)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return struct {
-		Repo         string            `json:"repo"`
-		Files        []source          `json:"files"`
-		Descriptions map[string]string `json:"descriptions"`
-		Agent        string            `json:"agent"`
-	}{repo, files, descriptions, "AIによる抽出・説明は参考情報です"}, nil
+	return preparePlan(repo, files, descriptions, local)
 }

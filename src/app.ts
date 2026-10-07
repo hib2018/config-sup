@@ -1,117 +1,94 @@
 export {};
-type Field = { path: string[]; type: 'string' | 'number' | 'boolean'; value: string | number | boolean };
+type Value = string | number | boolean;
+type Field = { path: string[]; type: 'string' | 'number' | 'boolean'; value: Value; choices?: Value[]; target?: { id: number; path: string[]; file: string } };
 type Source = { file: string; fields: Field[] };
-type Analysis = { repo: string; files: Source[]; descriptions: Record<string, string>; agent: string };
-type LocalHandle = { name: string; getFile(): Promise<File>; createWritable(): Promise<{ write(data: string): Promise<void>; close(): Promise<void>; abort(): Promise<void> }> };
-declare global { interface Window { showOpenFilePicker?: (options: object) => Promise<LocalHandle[]> } }
-
+type Analysis = { repo: string; files: Source[]; descriptions: Record<string, string>; token: string };
 const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const status = byId<HTMLParagraphElement>('status');
 const editor = byId<HTMLElement>('editor');
-const sourceSelect = byId<HTMLSelectElement>('source');
 const fieldsNode = byId<HTMLDivElement>('fields');
 const review = byId<HTMLElement>('review');
 const previewButton = byId<HTMLButtonElement>('preview');
 let analysis: Analysis;
-let handle: LocalHandle | undefined;
-let original = '';
-let local: Record<string, unknown>;
-let updates = new Map<string, string | number | boolean>();
-let proposed = '';
+let updates = new Map<string, Value>();
+let previewId = '';
+let revision = 0;
+let controls: (HTMLInputElement | HTMLSelectElement)[] = [];
 
 function message(text: string, error = false) { status.textContent = text; status.classList.toggle('error', error); }
-function source() { return analysis.files[Number(sourceSelect.value)]; }
-function getPath(object: unknown, path: string[]): unknown {
-  let current = object;
-  for (const key of path) {
-    if (!current || typeof current !== 'object' || Array.isArray(current) || !Object.hasOwn(current, key)) return undefined;
-    current = (current as Record<string, unknown>)[key];
-  }
-  return current;
+function resetReview() { revision++; previewId = ''; review.hidden = true; previewButton.disabled = !updates.size || controls.some(control => !control.checkValidity()); }
+async function post(path: string, input: unknown) {
+  const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+  const result = await response.json();
+  if (!response.ok) throw Error(result.error || '処理に失敗しました');
+  return result;
 }
-function setPath(object: Record<string, unknown>, path: string[], value: unknown) {
-  let current = object;
-  for (const key of path.slice(0, -1)) current = current[key] as Record<string, unknown>;
-  current[path.at(-1)!] = value;
-}
-function resetReview() { review.hidden = true; proposed = ''; }
 function render() {
-  updates = new Map(); resetReview(); fieldsNode.replaceChildren();
-  const selected = source();
-  for (const field of selected.fields) {
-    const path = field.path.join('.');
-    const existing = handle ? getPath(local, field.path) : field.value;
-    const compatible = !handle || typeof existing === field.type;
-    const div = document.createElement('div'); div.className = 'field';
-    const label = document.createElement('label'); label.textContent = path; div.append(label);
-    const note = document.createElement('small');
-    note.textContent = `${selected.file} → ${path}${analysis.descriptions[`${selected.file}|${path}`] ? ` · AIによる説明（要確認）: ${analysis.descriptions[`${selected.file}|${path}`]}` : ''}${compatible ? '' : ' · 適用先に同じ型の項目がないため編集不可'}`;
-    div.append(note);
-    const input = document.createElement('input'); input.disabled = !handle || !compatible;
-    if (field.type === 'boolean') {
-      input.type = 'checkbox'; input.checked = existing as boolean;
-    } else {
-      input.type = field.type === 'number' ? 'number' : 'text';
-      if (field.type === 'number') input.step = 'any';
-      input.value = String(existing ?? '');
-    }
-    input.setAttribute('aria-label', path);
-    input.addEventListener('input', () => {
-      resetReview();
-      const value = field.type === 'boolean' ? input.checked : field.type === 'number' ? input.valueAsNumber : input.value;
-      if (typeof value === 'number' && !Number.isFinite(value)) updates.delete(JSON.stringify(field.path));
-      else updates.set(JSON.stringify(field.path), value);
-      previewButton.disabled = !updates.size;
+  updates = new Map(); controls = []; fieldsNode.replaceChildren(); resetReview();
+  analysis.files.forEach((source, fi) => {
+    const heading = document.createElement('h2'); heading.textContent = source.file; fieldsNode.append(heading);
+    source.fields.forEach((field, ki) => {
+      const id = `${fi}:${ki}`;
+      const path = field.path.join('.');
+      const div = document.createElement('div'); div.className = 'field';
+      const label = document.createElement('label'); label.textContent = path; div.append(label);
+      const destination = document.createElement('small');
+      destination.textContent = field.target ? `適用先: ${field.target.file} → ${field.target.path.join('.')}` : '適用先未特定（編集不可）';
+      div.append(destination);
+      const description = analysis.descriptions[`${source.file}|${path}`];
+      if (description) { const line = document.createElement('p'); line.className = 'description'; line.textContent = description; div.append(line); }
+      if (field.target) {
+        const choices = field.type === 'boolean' ? [true, false] : field.choices && field.choices.length >= 2 ? field.choices : undefined;
+        let control: HTMLInputElement | HTMLSelectElement;
+        if (choices) {
+          const select = document.createElement('select');
+          const values = choices.some(value => value === field.value) ? choices : [field.value, ...choices];
+          for (const value of values) { const option = document.createElement('option'); option.value = JSON.stringify(value); option.textContent = typeof value === 'boolean' ? value ? '有効 (true)' : '無効 (false)' : String(value); select.append(option); }
+          select.value = JSON.stringify(field.value);
+          control = select;
+        } else {
+          const hint = document.createElement('small'); hint.textContent = field.type === 'number' ? '数値を入力' : '自由入力（文字列）'; div.append(hint);
+          const input = document.createElement('input'); input.type = field.type === 'number' ? 'number' : 'text';
+          if (field.type === 'number') input.step = 'any';
+          input.required = true; input.value = String(field.value); control = input;
+        }
+        label.htmlFor = `setting-${fi}-${ki}`; control.id = label.htmlFor;
+        control.addEventListener('input', () => {
+          const value: Value = control instanceof HTMLSelectElement ? JSON.parse(control.value) : field.type === 'number' ? control.valueAsNumber : control.value;
+          if (!control.checkValidity() || (typeof value === 'number' && !Number.isFinite(value))) updates.delete(id);
+          else if (value === field.value) updates.delete(id);
+          else updates.set(id, value);
+          resetReview();
+        });
+        controls.push(control); div.append(control);
+      }
+      fieldsNode.append(div);
     });
-    div.append(input); fieldsNode.append(div);
-  }
-  previewButton.disabled = true;
+  });
 }
-
 byId<HTMLFormElement>('analyze').addEventListener('submit', async event => {
-  event.preventDefault(); message('解析中…'); editor.hidden = true; handle = undefined;
+  event.preventDefault(); message('解析中…'); editor.hidden = true; resetReview();
   try {
-    const response = await fetch('/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: byId<HTMLInputElement>('url').value, useAgent: byId<HTMLInputElement>('agent').checked }) });
-    const data = await response.json();
-    if (!response.ok) throw Error(data.error || '解析に失敗しました');
-    analysis = data;
-    sourceSelect.replaceChildren(...analysis.files.map((file, index) => { const option = document.createElement('option'); option.value = String(index); option.textContent = file.file; return option; }));
-    byId('agent-status').textContent = analysis.agent;
-    byId('destination').textContent = '';
-    editor.hidden = false; render(); message(`${analysis.files.length} 件の設定ファイルを発見しました`);
+    analysis = await post('/analyze', { url: byId<HTMLInputElement>('url').value, useAgent: byId<HTMLInputElement>('agent').checked, useLocal: byId<HTMLInputElement>('local').checked });
+    editor.hidden = false; render(); message(`${analysis.files.length} 件の設定ファイルを解析しました`);
   } catch (error) { message(String(error), true); }
 });
-sourceSelect.addEventListener('change', render);
-byId<HTMLButtonElement>('pick').addEventListener('click', async () => {
-  if (!window.showOpenFilePicker) { message('このブラウザはファイルへの書き込みに非対応です。ChromeまたはEdgeを使用してください', true); return; }
+previewButton.addEventListener('click', async () => {
+  const currentRevision = revision; previewButton.disabled = true;
   try {
-    const [candidate] = await window.showOpenFilePicker({ multiple: false, types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }] });
-    const text = await (await candidate.getFile()).text();
-    if (text.length > 100_000) throw Error('適用先が大きすぎます');
-    const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw Error('JSONオブジェクトを選択してください');
-    handle = candidate; original = text; local = parsed;
-    byId('destination').textContent = `適用先: ${candidate.name}`;
-    render(); message('適用先を選択しました');
-  } catch (error) { if ((error as Error).name !== 'AbortError') message(String(error), true); }
-});
-previewButton.addEventListener('click', () => {
-  try {
-    const updated = structuredClone(local);
-    for (const [key, value] of updates) setPath(updated, JSON.parse(key), value);
-    proposed = JSON.stringify(updated, null, 2) + '\n';
-    if (JSON.stringify(updated) === JSON.stringify(local)) throw Error('変更がありません');
-    byId('diff').textContent = `変更前（選択した項目）:\n${[...updates].map(([key]) => `${JSON.parse(key).join('.')} = ${JSON.stringify(getPath(local, JSON.parse(key)))}`).join('\n')}\n\n変更後（選択した項目）:\n${[...updates].map(([key, value]) => `${JSON.parse(key).join('.')} = ${JSON.stringify(value)}`).join('\n')}\n\n注意: 適用時はJSONファイル全体を整形して書き直します。`;
-    review.hidden = false; message('差分を確認してから適用してください');
-  } catch (error) { resetReview(); message(String(error), true); }
+    const result = await post('/preview', { token: analysis.token, changes: [...updates].map(([id, value]) => ({ id, value })) });
+    if (currentRevision !== revision) return;
+    previewId = result.previewId; byId('diff').textContent = result.diff; review.hidden = false; message('適用先と差分を確認してください');
+  } catch (error) { message(String(error), true); }
+  finally { previewButton.disabled = !updates.size || controls.some(control => !control.checkValidity()); }
 });
 byId<HTMLButtonElement>('apply').addEventListener('click', async () => {
-  if (!handle || !proposed || review.hidden) return;
+  if (!previewId || review.hidden) return;
+  const id = previewId; previewId = ''; byId<HTMLButtonElement>('apply').disabled = true;
   try {
-    if (await (await handle.getFile()).text() !== original) throw Error('適用先が変更されています。ファイルを選び直してください');
-    const writer = await handle.createWritable();
-    try { await writer.write(proposed); await writer.close(); }
-    catch (error) { await writer.abort(); throw error; }
-    original = proposed; local = JSON.parse(proposed); render(); message('適用しました');
-  } catch (error) { resetReview(); message(String(error), true); }
+    await post('/apply', { token: analysis.token, previewId: id });
+    for (const control of controls) control.disabled = true;
+    previewButton.disabled = true; review.hidden = true; message('適用しました。続けるには再解析してください');
+  } catch (error) { review.hidden = true; message(String(error), true); }
+  finally { byId<HTMLButtonElement>('apply').disabled = false; }
 });

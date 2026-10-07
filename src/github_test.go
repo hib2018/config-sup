@@ -20,8 +20,20 @@ func TestGithubRepo(t *testing.T) {
 }
 
 func TestAnalyzeRequiresConsent(t *testing.T) {
-	if _, err := analyze("https://github.com/example/project", false); err == nil {
+	if _, _, err := analyze("https://github.com/example/project", false); err == nil {
 		t.Fatal("accepted analysis without consent")
+	}
+}
+
+func TestApplyRejectsMissingPreview(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/apply", strings.NewReader(`{"token":"unknown","previewId":"none"}`))
+	req.Host = "127.0.0.1:4173"
+	req.Header.Set("Origin", "http://127.0.0.1:4173")
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	handler("4173").ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", res.Code)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,10 +9,16 @@ import (
 	"time"
 )
 
-func inspectRepo(root string) ([]source, map[string]string, error) {
+func inspectRepo(root string, local []localFile) ([]source, map[string]string, error) {
+	payload, err := json.Marshal(map[string]any{"local": local})
+	if err != nil {
+		return nil, nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "node", "src/agent.mjs", root).Output()
+	cmd := exec.CommandContext(ctx, "node", "src/agent.mjs", root)
+	cmd.Stdin = bytes.NewReader(payload)
+	output, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, nil, errors.New("Pi の解析が120秒以内に終わりませんでした")
