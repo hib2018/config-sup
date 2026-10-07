@@ -88,6 +88,7 @@ func preparePlan(repo string, files []source, descriptions map[string]string, lo
 		return nil, nil, err
 	}
 	p := &plan{Token: token, Created: time.Now(), Bindings: map[string]binding{}, Original: map[string][]byte{}}
+	valueCache := map[string][]localValue{}
 	seenTargets := map[string]bool{}
 	for fi := range files {
 		for ki := range files[fi].Fields {
@@ -111,28 +112,25 @@ func preparePlan(repo string, files []source, descriptions map[string]string, lo
 				}
 				p.Original[candidate.Path] = data
 			}
-			value, parseErr := parseLocalJSON(data)
-			if parseErr != nil {
-				field.Target = nil
-				continue
+			values, found := valueCache[candidate.Path]
+			if !found {
+				var parseErr error
+				values, parseErr = inspectValues(candidate.Path, data)
+				if parseErr != nil {
+					field.Target = nil
+					continue
+				}
+				valueCache[candidate.Path] = values
 			}
-			current, ok := currentValue(value, field.Target.Path)
-			if !ok || valueType(current) != field.Type {
-				field.Target = nil
-				continue
-			}
-			if number, ok := current.(json.Number); ok && numericValue(number) == nil {
+			current, typ, ok := localValueAt(values, field.Target.Path)
+			if !ok || typ != field.Type {
 				field.Target = nil
 				continue
 			}
 			id := fmt.Sprintf("%d:%d", fi, ki)
 			p.Bindings[id] = binding{candidate.Path, field.Target.Path, field.Type}
 			seenTargets[targetKey] = true
-			if number, ok := current.(json.Number); ok {
-				field.Value = numericValue(number)
-			} else {
-				field.Value = current
-			} // Show actual local value, not a model guess.
+			field.Value = current // Show actual local value, not a model guess.
 			field.Target.File = candidate.Path
 		}
 	}
@@ -183,6 +181,9 @@ func (p *plan) preview(changes []pendingChange) (string, string, error) {
 		return "", "", errors.New("変更項目がありません")
 	}
 	updated := map[string]map[string]any{}
+	foreign := map[string][]formatChange{}
+	inspected := map[string][]localValue{}
+	loaded := map[string]bool{}
 	modified := map[string]bool{}
 	seen := map[string]bool{}
 	lines := []string{}
@@ -192,8 +193,7 @@ func (p *plan) preview(changes []pendingChange) (string, string, error) {
 			return "", "", errors.New("無効な変更項目です")
 		}
 		seen[change.ID] = true
-		object, ok := updated[binding.File]
-		if !ok {
+		if !loaded[binding.File] {
 			if err := safeLocalFile(binding.File); err != nil {
 				return "", "", err
 			}
@@ -201,14 +201,31 @@ func (p *plan) preview(changes []pendingChange) (string, string, error) {
 			if err != nil || !bytes.Equal(current, p.Original[binding.File]) {
 				return "", "", errors.New("適用先が変更されています。再解析してください")
 			}
-			object, err = parseLocalJSON(current)
-			if err != nil {
-				return "", "", errors.New("対象JSONが壊れています")
+			if fileFormat(binding.File) == "json" {
+				object, err := parseLocalJSON(current)
+				if err != nil {
+					return "", "", err
+				}
+				updated[binding.File] = object
+			} else {
+				values, err := inspectValues(binding.File, current)
+				if err != nil {
+					return "", "", err
+				}
+				inspected[binding.File] = values
 			}
-			updated[binding.File] = object
+			loaded[binding.File] = true
 		}
-		before, exists := currentValue(object, binding.Key)
-		if !exists || valueType(before) != binding.Type {
+		var before any
+		var typ string
+		var exists bool
+		if fileFormat(binding.File) == "json" {
+			before, exists = currentValue(updated[binding.File], binding.Key)
+			typ = valueType(before)
+		} else {
+			before, typ, exists = localValueAt(inspected[binding.File], binding.Key)
+		}
+		if !exists || typ != binding.Type {
 			return "", "", errors.New("対象のキーが変更されています")
 		}
 		if number, ok := before.(json.Number); ok {
@@ -218,7 +235,17 @@ func (p *plan) preview(changes []pendingChange) (string, string, error) {
 		} else if reflect.DeepEqual(before, change.Value) {
 			continue
 		}
-		setLocal(object, binding.Key, change.Value)
+		if fileFormat(binding.File) == "json" {
+			setLocal(updated[binding.File], binding.Key, change.Value)
+		} else {
+			foreign[binding.File] = append(foreign[binding.File], formatChange{binding.Key, change.Value})
+			for index := range inspected[binding.File] {
+				if reflect.DeepEqual(inspected[binding.File][index].Path, binding.Key) {
+					inspected[binding.File][index].Value = change.Value
+					break
+				}
+			}
+		}
 		modified[binding.File] = true
 		lines = append(lines, fmt.Sprintf("%s → %s: %s → %s", binding.File, strings.Join(binding.Key, "."), printable(before), printable(change.Value)))
 	}
@@ -226,22 +253,27 @@ func (p *plan) preview(changes []pendingChange) (string, string, error) {
 		return "", "", errors.New("変更がありません")
 	}
 	files := map[string][]byte{}
-	for path, object := range updated {
-		if !modified[path] {
-			continue
+	for path := range modified {
+		if fileFormat(path) == "json" {
+			text, err := json.MarshalIndent(updated[path], "", "  ")
+			if err != nil {
+				return "", "", err
+			}
+			files[path] = append(text, '\n')
+		} else {
+			text, err := patchForeign(path, p.Original[path], foreign[path])
+			if err != nil {
+				return "", "", err
+			}
+			files[path] = text
 		}
-		text, err := json.MarshalIndent(object, "", "  ")
-		if err != nil {
-			return "", "", err
-		}
-		files[path] = append(text, '\n')
 	}
 	id, err := newToken()
 	if err != nil {
 		return "", "", err
 	}
 	p.Pending = &previewState{id, files}
-	return id, strings.Join(lines, "\n") + "\n\n※ 対象のJSONファイル全体を整形して書き直します。", nil
+	return id, strings.Join(lines, "\n") + "\n\n※ JSONは全体を整形し、YAML/TOMLは対象値だけを置換します。", nil
 }
 func printable(value any) string { text, _ := json.Marshal(value); return string(text) }
 

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type localField struct {
@@ -88,7 +89,7 @@ func scanLocal() ([]localFile, error) {
 				}
 				return nil
 			}
-			if len(paths) < 5000 && entry.Type().IsRegular() && strings.EqualFold(filepath.Ext(path), ".json") && !privateName.MatchString(entry.Name()) {
+			if len(paths) < 5000 && entry.Type().IsRegular() && fileFormat(path) != "" && !privateName.MatchString(entry.Name()) {
 				paths = append(paths, path)
 			}
 			return nil
@@ -108,29 +109,40 @@ func scanLocal() ([]localFile, error) {
 		return strings.Compare(a, b)
 	})
 	files := []localFile{}
+	deadline := time.Now().Add(15 * time.Second)
+	foreignReads := 0
 	for _, path := range paths {
-		if len(files) >= 500 {
+		if len(files) >= 500 || time.Now().After(deadline) {
 			break
 		}
 		info, err := os.Lstat(path)
 		if err != nil || !info.Mode().IsRegular() || info.Size() > 100_000 || safeLocalFile(path) != nil {
 			continue
 		}
+		if fileFormat(path) != "json" {
+			if foreignReads >= 100 {
+				continue
+			}
+			foreignReads++
+		}
 		data, err := os.ReadFile(path)
 		if err != nil || len(data) > 100_000 {
 			continue
 		}
-		value, err := parseLocalJSON(data)
+		values, err := inspectValues(path, data)
 		if err != nil {
 			continue
 		}
-		fields := primitivePaths(value)
+		fields := []localField{}
+		for _, value := range values {
+			fields = append(fields, localField{value.Path, value.Type})
+		}
 		if len(fields) > 0 {
 			files = append(files, localFile{len(files), path, fields})
 		}
 	}
 	if len(files) == 0 {
-		return nil, errors.New("対象範囲に編集可能なローカルJSON設定が見つかりませんでした")
+		return nil, errors.New("対象範囲に編集可能なローカル設定が見つかりませんでした")
 	}
 	return files, nil
 }

@@ -6,13 +6,15 @@
   "scripts": {
     "build": "tsc",
     "start": "npm run build && go run ./src",
-    "test": "go test ./src && node --test src/agent.test.mjs"
+    "test": "go test ./src && node --test src/*.test.mjs"
   },
   "devDependencies": {
     "typescript": "^5.9.3"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^1.0.4",
-    "typebox": "^1.3.27"
+    "@iarna/toml": "^2.2.5",
+    "typebox": "^1.3.27",
+    "yaml": "^2.9.1"
   }
 }
