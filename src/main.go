@@ -142,13 +142,12 @@ func respondError(w http.ResponseWriter, err error) {
 }
 
 func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "4173"
+	info, err := os.Stdin.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		fmt.Fprintln(os.Stderr, "承認を伴うため、対話端末から実行してください")
+		os.Exit(1)
 	}
-	address := "127.0.0.1:" + port
-	fmt.Println("http://" + address)
-	if err := http.ListenAndServe(address, handler(port)); err != nil {
+	if err := runCLI(strings.Join(os.Args[1:], " "), os.Stdin, os.Stdout, findTool); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

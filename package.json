@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "npm run build && go run ./src",
+    "start": "go run ./src",
     "test": "go test ./src && node --test src/*.test.mjs"
   },
   "devDependencies": {
