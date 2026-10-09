@@ -43,6 +43,22 @@ func TestCLIOnlyAppliesAfterHumanYes(t *testing.T) {
 		t.Fatalf("unexpected result: %s / %s", data, out.String())
 	}
 }
+func TestTUIPicksOnlyListedSetting(t *testing.T) {
+	bin := t.TempDir()
+	path := filepath.Join(bin, "fzf")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nsed -n '2p'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	index, err := pickTUI([]localValue{{Path: []string{"first"}, Value: "a"}, {Path: []string{"second"}, Value: "b"}})
+	if err != nil || index != 1 {
+		t.Fatalf("pick: %d %v", index, err)
+	}
+	if displayPath([]string{"line\ninjected"}) != `line\ninjected` {
+		t.Fatal("newline not escaped")
+	}
+}
+
 func TestCLINoSearchWithoutConsent(t *testing.T) {
 	var out bytes.Buffer
 	err := runCLI("example", strings.NewReader("no\n"), &out, func([]localFile, string) ([]int, error) { t.Fatal("finder called"); return nil, nil })

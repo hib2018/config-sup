@@ -147,7 +147,16 @@ func main() {
 		fmt.Fprintln(os.Stderr, "承認を伴うため、対話端末から実行してください")
 		os.Exit(1)
 	}
-	if err := runCLI(strings.Join(os.Args[1:], " "), os.Stdin, os.Stdout, findTool); err != nil {
+	args := os.Args[1:]
+	tui := len(args) > 0 && args[0] == "--tui"
+	if tui {
+		args = args[1:]
+	}
+	workflow := runCLI
+	if tui {
+		workflow = runTUI
+	}
+	if err := workflow(strings.Join(args, " "), os.Stdin, os.Stdout, findTool); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

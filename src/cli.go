@@ -57,6 +57,37 @@ func yes(reader *bufio.Reader, out io.Writer, question string) (bool, error) {
 }
 
 func runCLI(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error)) error {
+	return runWorkflow(request, in, out, find, false)
+}
+func runTUI(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error)) error {
+	return runWorkflow(request, in, out, find, true)
+}
+func displayPath(path []string) string {
+	return strings.NewReplacer("\n", "\\n", "\r", "\\r", "\t", "\\t").Replace(strings.Join(path, "."))
+}
+func pickTUI(values []localValue) (int, error) {
+	if _, err := exec.LookPath("fzf"); err != nil {
+		return 0, errors.New("TUIにはfzfが必要です。CLIは --tui なしで起動できます")
+	}
+	rows := make([]string, len(values))
+	for index, value := range values {
+		rows[index] = fmt.Sprintf("%d. %s = %s", index+1, displayPath(value.Path), printable(value.Value))
+	}
+	cmd := exec.Command("fzf", "--prompt", "設定項目> ", "--height", "~60%", "--layout", "reverse", "--no-multi")
+	cmd.Stdin = strings.NewReader(strings.Join(rows, "\n") + "\n")
+	cmd.Stderr = os.Stderr
+	selected, err := cmd.Output()
+	if err != nil {
+		return 0, errors.New("TUIの選択を中止しました")
+	}
+	for index, row := range rows {
+		if strings.TrimSuffix(string(selected), "\n") == row {
+			return index, nil
+		}
+	}
+	return 0, errors.New("不正な選択です")
+}
+func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error), tui bool) error {
 	reader := bufio.NewReader(in)
 	if request == "" {
 		fmt.Fprint(out, "対象ツールを自然言語で指定: ")
@@ -122,23 +153,32 @@ func runCLI(request string, in io.Reader, out io.Writer, find func([]localFile, 
 	if len(values) == 0 {
 		return errors.New("表示可能な設定項目がありません")
 	}
-	fmt.Fprintln(out, "設定項目  現在の内容")
-	for index, value := range values {
-		fmt.Fprintf(out, "%d. %s = %s\n", index+1, strings.Join(value.Path, "."), printable(value.Value))
+	index := 0
+	if tui {
+		index, err = pickTUI(values)
+		if err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintln(out, "設定項目  現在の内容")
+		for number, value := range values {
+			fmt.Fprintf(out, "%d. %s = %s\n", number+1, displayPath(value.Path), printable(value.Value))
+		}
+		fmt.Fprint(out, "変更する項目の番号（空欄で終了）: ")
+		choice, err := answer(reader)
+		if err != nil {
+			return err
+		}
+		if choice == "" {
+			return nil
+		}
+		number, err := strconv.Atoi(choice)
+		if err != nil || number < 1 || number > len(values) {
+			return errors.New("項目番号が不正です")
+		}
+		index = number - 1
 	}
-	fmt.Fprint(out, "変更する項目の番号（空欄で終了）: ")
-	choice, err := answer(reader)
-	if err != nil {
-		return err
-	}
-	if choice == "" {
-		return nil
-	}
-	index, err := strconv.Atoi(choice)
-	if err != nil || index < 1 || index > len(values) {
-		return errors.New("項目番号が不正です")
-	}
-	item := values[index-1]
+	item := values[index]
 	if item.Type == "boolean" {
 		fmt.Fprint(out, "新しい値（true/false）: ")
 	} else if item.Type == "number" {
@@ -180,7 +220,7 @@ func runCLI(request string, in io.Reader, out io.Writer, find func([]localFile, 
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "%s: %s → %s\n", strings.Join(item.Path, "."), printable(item.Value), printable(next))
+	fmt.Fprintf(out, "%s: %s → %s\n", displayPath(item.Path), printable(item.Value), printable(next))
 	ok, err = yes(reader, out, "この設定内容を適用しますか？")
 	if err != nil {
 		return err
