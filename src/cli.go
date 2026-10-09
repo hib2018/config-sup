@@ -119,6 +119,7 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 		return err
 	}
 	ids := []int{}
+	appPath := ""
 	if len(local) > 0 {
 		ids, err = find(local, request)
 		if err != nil {
@@ -167,8 +168,9 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 		if appID < 0 || appID >= len(apps) {
 			return errors.New("不正なアプリ候補です")
 		}
-		appName := strings.TrimSuffix(filepath.Base(apps[appID].Path), filepath.Ext(apps[appID].Path))
-		fmt.Fprintf(out, "アプリ本体を確認: %s （設定の書き込み先にはしません）\n", apps[appID].Path)
+		appPath = apps[appID].Path
+		appName := strings.TrimSuffix(filepath.Base(appPath), filepath.Ext(appPath))
+		fmt.Fprintf(out, "アプリ本体を確認: %s （設定の書き込み先にはしません）\n", appPath)
 		if len(local) > 0 {
 			ids, err = find(local, appName)
 			if err != nil {
@@ -240,34 +242,74 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 		index = number - 1
 	}
 	item := values[index]
-	if item.Type == "boolean" {
-		fmt.Fprint(out, "新しい値（true/false）: ")
-	} else if item.Type == "number" {
-		fmt.Fprint(out, "新しい数値: ")
-	} else {
-		fmt.Fprint(out, "新しい文字列: ")
-	}
-	text, err := answer(reader)
-	if err != nil {
-		return err
+	var choices []any
+	if item.Type != "boolean" {
+		roots := []string{filepath.Dir(candidate.Path)}
+		if appPath != "" {
+			roots = append(roots, appPath)
+		}
+		approved, err := yes(reader, out, "選択肢を調べるため"+strings.Join(roots, " と ")+"内のソースコード名と必要なコード内容をPiモデルへ送信してよいですか？")
+		if err != nil {
+			return err
+		}
+		if approved {
+			paths := scanCodePaths(roots)
+			if len(paths) > 0 {
+				choices, err = findChoices(paths, item, request)
+				if err != nil {
+					fmt.Fprintf(out, "選択肢の解析は利用できません: %v\n", err)
+				}
+			}
+		}
 	}
 	var next any
-	switch item.Type {
-	case "boolean":
-		if text != "true" && text != "false" {
-			return errors.New("true または false を入力してください")
+	if len(choices) >= 2 {
+		fmt.Fprintln(out, "コードに根拠のある選択肢（推測を含む可能性があるため確認してください）:")
+		for number, value := range choices {
+			fmt.Fprintf(out, "%d. %s\n", number+1, printable(value))
 		}
-		next = text == "true"
-	case "number":
-		number, err := strconv.ParseFloat(text, 64)
-		if err != nil || math.IsNaN(number) || math.IsInf(number, 0) || math.Abs(number) > 9007199254740991 {
-			return errors.New("有効な数値を入力してください")
+		fmt.Fprint(out, "番号で選択（0で自由入力）: ")
+		choice, err := answer(reader)
+		if err != nil {
+			return err
 		}
-		next = number
-	case "string":
-		next = text
-	default:
-		return errors.New("未対応の値です")
+		number, err := strconv.Atoi(choice)
+		if err != nil || number < 0 || number > len(choices) {
+			return errors.New("選択番号が不正です")
+		}
+		if number > 0 {
+			next = choices[number-1]
+		}
+	}
+	if next == nil && item.Type == "boolean" {
+		fmt.Fprint(out, "新しい値（true/false）: ")
+	} else if next == nil && item.Type == "number" {
+		fmt.Fprint(out, "新しい数値: ")
+	} else if next == nil {
+		fmt.Fprint(out, "新しい文字列: ")
+	}
+	if next == nil {
+		text, err := answer(reader)
+		if err != nil {
+			return err
+		}
+		switch item.Type {
+		case "boolean":
+			if text != "true" && text != "false" {
+				return errors.New("true または false を入力してください")
+			}
+			next = text == "true"
+		case "number":
+			number, err := strconv.ParseFloat(text, 64)
+			if err != nil || math.IsNaN(number) || math.IsInf(number, 0) || math.Abs(number) > 9007199254740991 {
+				return errors.New("有効な数値を入力してください")
+			}
+			next = number
+		case "string":
+			next = text
+		default:
+			return errors.New("未対応の値です")
+		}
 	}
 	files := []source{{File: candidate.Path, Fields: []field{{Path: item.Path, Type: item.Type, Value: item.Value, Target: &target{ID: candidate.ID, Path: item.Path}}}}}
 	_, plan, err := preparePlan("local", files, nil, local)
