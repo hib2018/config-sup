@@ -54,8 +54,8 @@ func TestTUIPicksOnlyListedSetting(t *testing.T) {
 	if err != nil || index != 1 {
 		t.Fatalf("pick: %d %v", index, err)
 	}
-	if displayPath([]string{"line\ninjected"}) != `line\ninjected` {
-		t.Fatal("newline not escaped")
+	if displayPath([]string{"line\ninjected"}) != `line\ninjected` || displayPath([]string{"\x1b[31m"}) != `\x1b[31m` {
+		t.Fatal("control character not escaped")
 	}
 }
 

@@ -70,7 +70,8 @@ func runTUI(request string, in io.Reader, out io.Writer, find func([]localFile, 
 	return runWorkflow(request, in, out, find, true, findApp)
 }
 func displayPath(path []string) string {
-	return strings.NewReplacer("\n", "\\n", "\r", "\\r", "\t", "\\t").Replace(strings.Join(path, "."))
+	quoted := strconv.Quote(strings.Join(path, "."))
+	return quoted[1 : len(quoted)-1]
 }
 func pickTUI(values []localValue) (int, error) {
 	if _, err := exec.LookPath("fzf"); err != nil {
@@ -151,7 +152,7 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 				if candidate < 0 || candidate >= len(apps) {
 					return errors.New("不正なアプリ候補です")
 				}
-				fmt.Fprintf(out, "%d. %s\n", index+1, apps[candidate].Path)
+				fmt.Fprintf(out, "%d. %q\n", index+1, apps[candidate].Path)
 			}
 			fmt.Fprint(out, "番号（それ以外は中止）: ")
 			choice, err := answer(reader)
@@ -170,7 +171,7 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 		}
 		appPath = apps[appID].Path
 		appName := strings.TrimSuffix(filepath.Base(appPath), filepath.Ext(appPath))
-		fmt.Fprintf(out, "アプリ本体を確認: %s （設定の書き込み先にはしません）\n", appPath)
+		fmt.Fprintf(out, "アプリ本体を確認: %q （設定の書き込み先にはしません）\n", appPath)
 		if len(local) > 0 {
 			ids, err = find(local, appName)
 			if err != nil {
@@ -188,7 +189,7 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 			if candidate < 0 || candidate >= len(local) {
 				return errors.New("不正な候補です")
 			}
-			fmt.Fprintf(out, "%d. %s\n", index+1, local[candidate].Path)
+			fmt.Fprintf(out, "%d. %q\n", index+1, local[candidate].Path)
 		}
 		fmt.Fprint(out, "番号（それ以外は中止）: ")
 		choice, err := answer(reader)
@@ -248,7 +249,7 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 		if appPath != "" {
 			roots = append(roots, appPath)
 		}
-		approved, err := yes(reader, out, "選択肢を調べるため"+strings.Join(roots, " と ")+"内のソースコード名と必要なコード内容をPiモデルへ送信してよいですか？")
+		approved, err := yes(reader, out, "選択肢を調べるため"+fmt.Sprintf("%q", roots)+"内のソースコード名と必要なコード内容をPiモデルへ送信してよいですか？")
 		if err != nil {
 			return err
 		}
@@ -334,7 +335,7 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 	}
 	applyErr := plan.apply(previewID)
 	for path, backup := range plan.Backups {
-		fmt.Fprintf(out, "バックアップ: %s （元: %s）\n", backup, path)
+		fmt.Fprintf(out, "バックアップ: %q （元: %q）\n", backup, path)
 	}
 	if applyErr != nil {
 		return applyErr
