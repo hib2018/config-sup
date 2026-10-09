@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -18,7 +19,13 @@ import (
 )
 
 func findTool(local []localFile, request string) ([]int, error) {
-	payload, err := json.Marshal(map[string]any{"local": local, "request": request})
+	return queryAgent(local, request, "config")
+}
+func findApp(local []localFile, request string) ([]int, error) {
+	return queryAgent(local, request, "app")
+}
+func queryAgent(local []localFile, request, mode string) ([]int, error) {
+	payload, err := json.Marshal(map[string]any{"local": local, "request": request, "mode": mode})
 	if err != nil {
 		return nil, err
 	}
@@ -57,10 +64,10 @@ func yes(reader *bufio.Reader, out io.Writer, question string) (bool, error) {
 }
 
 func runCLI(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error)) error {
-	return runWorkflow(request, in, out, find, false)
+	return runWorkflow(request, in, out, find, false, findApp)
 }
 func runTUI(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error)) error {
-	return runWorkflow(request, in, out, find, true)
+	return runWorkflow(request, in, out, find, true, findApp)
 }
 func displayPath(path []string) string {
 	return strings.NewReplacer("\n", "\\n", "\r", "\\r", "\t", "\\t").Replace(strings.Join(path, "."))
@@ -87,7 +94,7 @@ func pickTUI(values []localValue) (int, error) {
 	}
 	return 0, errors.New("不正な選択です")
 }
-func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error), tui bool) error {
+func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error), tui bool, appFinder func([]localFile, string) ([]int, error)) error {
 	reader := bufio.NewReader(in)
 	if request == "" {
 		fmt.Fprint(out, "対象ツールを自然言語で指定: ")
@@ -108,15 +115,69 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 		return errors.New("解析は取り消されました")
 	}
 	local, err := scanLocal()
-	if err != nil {
+	if err != nil && !errors.Is(err, errNoLocal) {
 		return err
 	}
-	ids, err := find(local, request)
-	if err != nil {
-		return err
+	ids := []int{}
+	if len(local) > 0 {
+		ids, err = find(local, request)
+		if err != nil {
+			return err
+		}
 	}
 	if len(ids) == 0 {
-		return errors.New("対象が見つかりませんでした。追加ディレクトリの承認付き探索はまだ未実装です。探索範囲は広げていません")
+		approved, err := yes(reader, out, "初期範囲では対象を特定できませんでした。追加で /Applications と ~/Applications のアプリ名だけを読み取り専用で探し、Piモデルへ送ってよいですか？")
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return errors.New("追加探索せず終了しました")
+		}
+		apps := scanApps()
+		if len(apps) == 0 {
+			return errors.New("追加範囲にアプリが見つかりませんでした")
+		}
+		appIDs, err := appFinder(apps, request)
+		if err != nil {
+			return err
+		}
+		if len(appIDs) == 0 {
+			return errors.New("追加範囲でも対象ツールを特定できませんでした")
+		}
+		if len(appIDs) > 1 {
+			fmt.Fprintln(out, "アプリ候補が複数あります:")
+			for index, candidate := range appIDs {
+				if candidate < 0 || candidate >= len(apps) {
+					return errors.New("不正なアプリ候補です")
+				}
+				fmt.Fprintf(out, "%d. %s\n", index+1, apps[candidate].Path)
+			}
+			fmt.Fprint(out, "番号（それ以外は中止）: ")
+			choice, err := answer(reader)
+			if err != nil {
+				return err
+			}
+			number, err := strconv.Atoi(choice)
+			if err != nil || number < 1 || number > len(appIDs) {
+				return errors.New("中止しました")
+			}
+			appIDs = []int{appIDs[number-1]}
+		}
+		appID := appIDs[0]
+		if appID < 0 || appID >= len(apps) {
+			return errors.New("不正なアプリ候補です")
+		}
+		appName := strings.TrimSuffix(filepath.Base(apps[appID].Path), filepath.Ext(apps[appID].Path))
+		fmt.Fprintf(out, "アプリ本体を確認: %s （設定の書き込み先にはしません）\n", apps[appID].Path)
+		if len(local) > 0 {
+			ids, err = find(local, appName)
+			if err != nil {
+				return err
+			}
+		}
+		if len(ids) == 0 {
+			return errors.New("アプリ本体は見つかりましたが、初期範囲に対応する編集可能な設定ファイルが見つかりませんでした。アプリ本体は変更しません")
+		}
 	}
 	id := ids[0]
 	if len(ids) > 1 {

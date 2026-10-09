@@ -26,6 +26,7 @@ type localFile struct {
 }
 
 var privateName = regexp.MustCompile(`(?i)(auth|token|secret|credential|password|keychain|session)`)
+var errNoLocal = errors.New("対象範囲に編集可能なローカル設定が見つかりませんでした")
 
 func primitivePaths(value any) []localField {
 	fields := []localField{}
@@ -142,7 +143,7 @@ func scanLocal() ([]localFile, error) {
 		}
 	}
 	if len(files) == 0 {
-		return nil, errors.New("対象範囲に編集可能なローカル設定が見つかりませんでした")
+		return nil, errNoLocal
 	}
 	return files, nil
 }

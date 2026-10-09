@@ -59,6 +59,21 @@ func TestTUIPicksOnlyListedSetting(t *testing.T) {
 	}
 }
 
+func TestCLIExtraSearchRequiresSeparateConsent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".config")
+	os.MkdirAll(root, 0700)
+	os.WriteFile(filepath.Join(root, "settings.json"), []byte(`{"enabled":true}`), 0600)
+	var out bytes.Buffer
+	err := runWorkflow("missing", strings.NewReader("yes\nno\n"), &out,
+		func([]localFile, string) ([]int, error) { return nil, nil }, false,
+		func([]localFile, string) ([]int, error) { t.Fatal("extra search without consent"); return nil, nil })
+	if err == nil || !strings.Contains(err.Error(), "追加探索せず") {
+		t.Fatalf("unexpected: %v", err)
+	}
+}
+
 func TestCLINoSearchWithoutConsent(t *testing.T) {
 	var out bytes.Buffer
 	err := runCLI("example", strings.NewReader("no\n"), &out, func([]localFile, string) ([]int, error) { t.Fatal("finder called"); return nil, nil })
