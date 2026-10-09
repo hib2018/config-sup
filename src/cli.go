@@ -189,8 +189,12 @@ func runCLI(request string, in io.Reader, out io.Writer, find func([]localFile, 
 		fmt.Fprintln(out, "適用せず終了しました")
 		return nil
 	}
-	if err := plan.apply(previewID); err != nil {
-		return err
+	applyErr := plan.apply(previewID)
+	for path, backup := range plan.Backups {
+		fmt.Fprintf(out, "バックアップ: %s （元: %s）\n", backup, path)
+	}
+	if applyErr != nil {
+		return applyErr
 	}
 	fmt.Fprintln(out, "適用しました")
 	return nil

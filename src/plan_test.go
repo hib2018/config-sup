@@ -53,6 +53,10 @@ func TestLocalPlanPreviewAndApply(t *testing.T) {
 	if err := plan.apply(id); err != nil {
 		t.Fatal(err)
 	}
+	backup, err := os.ReadFile(plan.Backups[path])
+	if err != nil || string(backup) != string(original) {
+		t.Fatalf("backup: %s %v", backup, err)
+	}
 	data, _ = os.ReadFile(path)
 	var result map[string]any
 	if json.Unmarshal(data, &result) != nil || result["mode"] != "manual" || result["apiToken"] != "never send" || !strings.Contains(string(data), "9007199254740993") {

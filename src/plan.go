@@ -35,6 +35,7 @@ type plan struct {
 	Created  time.Time
 	Bindings map[string]binding
 	Original map[string][]byte
+	Backups  map[string]string
 	Pending  *previewState
 }
 
@@ -285,6 +286,7 @@ func (p *plan) apply(id string) error {
 	}
 	pending := p.Pending
 	p.Pending = nil
+	p.Backups = map[string]string{}
 	type staged struct {
 		path, temporary string
 		data            []byte
@@ -325,6 +327,20 @@ func (p *plan) apply(id string) error {
 		}
 	}
 	slices.SortFunc(stages, func(a, b staged) int { return strings.Compare(a.path, b.path) })
+	for _, stage := range stages {
+		backup, err := os.CreateTemp(filepath.Dir(stage.path), ".config-sup-backup-*")
+		if err != nil {
+			return err
+		}
+		p.Backups[stage.path] = backup.Name()
+		if _, err := backup.Write(p.Original[stage.path]); err != nil {
+			backup.Close()
+			return err
+		}
+		if err := backup.Close(); err != nil {
+			return err
+		}
+	}
 	for index, stage := range stages {
 		if err := safeLocalFile(stage.path); err != nil {
 			return fmt.Errorf("%dファイル適用後に失敗しました: %w", index, err)
