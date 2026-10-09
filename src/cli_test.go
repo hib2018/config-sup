@@ -59,6 +59,25 @@ func TestTUIPicksOnlyListedSetting(t *testing.T) {
 	}
 }
 
+func TestCLICodeReadingRequiresSeparateConsent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".config", "app")
+	os.MkdirAll(root, 0700)
+	path := filepath.Join(root, "settings.json")
+	os.WriteFile(path, []byte(`{"mode":"auto"}`), 0600)
+	var out bytes.Buffer
+	err := runCLI("app", strings.NewReader("yes\n1\nno\nmanual\nno\n"), &out,
+		func([]localFile, string) ([]int, error) { return []int{0}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != `{"mode":"auto"}` || !strings.Contains(out.String(), "コード内容をPiモデルへ送信") {
+		t.Fatalf("unexpected: %s / %s", data, out.String())
+	}
+}
+
 func TestCLIExtraSearchRequiresSeparateConsent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
