@@ -168,4 +168,15 @@ func TestLinkedUnspecifiedFormatRequiresSeparateApproval(t *testing.T) {
 	if info, _ := os.Lstat(alias); info.Mode()&os.ModeSymlink == 0 {
 		t.Fatal("replaced symlink")
 	}
+	backups, err := os.ReadDir(filepath.Join(home, ".local", "state", "config-sup", "backups"))
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("backup missing from private state directory: %v %#v", err, backups)
+	}
+	backup, err := os.ReadFile(filepath.Join(home, ".local", "state", "config-sup", "backups", backups[0].Name()))
+	if err != nil || !bytes.Equal(backup, before) {
+		t.Fatalf("backup content: %q %v", backup, err)
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 1 {
+		t.Fatalf("backup leaked into dotfiles: %#v", entries)
+	}
 }

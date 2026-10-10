@@ -379,7 +379,33 @@ func (p *plan) apply(id string) error {
 	}
 	slices.SortFunc(stages, func(a, b staged) int { return strings.Compare(a.path, b.path) })
 	for _, stage := range stages {
-		backup, err := os.CreateTemp(filepath.Dir(stage.path), ".config-sup-backup-*")
+		backupDir := filepath.Dir(stage.path)
+		if stage.path == p.ApprovedFile {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return err
+			}
+			backupDir = filepath.Join(home, ".local", "state", "config-sup", "backups")
+			current := home
+			for _, part := range []string{".local", "state", "config-sup", "backups"} {
+				current = filepath.Join(current, part)
+				info, err := os.Lstat(current)
+				if os.IsNotExist(err) {
+					if err := os.Mkdir(current, 0700); err != nil {
+						return err
+					}
+					info, err = os.Lstat(current)
+				}
+				if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+					return errors.New("バックアップ先にシンボリックリンクがあります")
+				}
+			}
+			info, err := os.Stat(backupDir)
+			if err != nil || info.Mode().Perm()&0077 != 0 {
+				return errors.New("バックアップ先はプライベートなディレクトリである必要があります")
+			}
+		}
+		backup, err := os.CreateTemp(backupDir, ".config-sup-backup-*")
 		if err != nil {
 			return err
 		}
