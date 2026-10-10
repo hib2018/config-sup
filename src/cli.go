@@ -58,9 +58,9 @@ func answer(reader *bufio.Reader) (string, error) {
 	return strings.TrimSpace(line), nil
 }
 func yes(reader *bufio.Reader, out io.Writer, question string) (bool, error) {
-	fmt.Fprintf(out, "%s [yes/No]: ", question)
+	fmt.Fprintf(out, "%s [y/N]: ", question)
 	text, err := answer(reader)
-	return text == "yes", err
+	return strings.EqualFold(text, "y"), err
 }
 
 func runCLI(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error)) error {
@@ -98,7 +98,7 @@ func pickTUI(values []localValue) (int, error) {
 func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error), tui bool, appFinder func([]localFile, string) ([]int, error)) error {
 	reader := bufio.NewReader(in)
 	if request == "" {
-		fmt.Fprint(out, "対象ツールを自然言語で指定: ")
+		fmt.Fprint(out, "tool: ")
 		var err error
 		request, err = answer(reader)
 		if err != nil {

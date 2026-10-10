@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"os"
 	"path/filepath"
@@ -8,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestCLIOnlyAppliesAfterHumanYes(t *testing.T) {
+func TestCLIOnlyAppliesAfterHumanY(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	dir := filepath.Join(home, ".config", "example")
@@ -27,7 +28,7 @@ func TestCLIOnlyAppliesAfterHumanYes(t *testing.T) {
 		return []int{local[0].ID}, nil
 	}
 	var out bytes.Buffer
-	if err := runCLI("example tool", strings.NewReader("yes\n1\nfalse\nno\n"), &out, finder); err != nil {
+	if err := runCLI("example tool", strings.NewReader("y\n1\nfalse\nN\n"), &out, finder); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
@@ -35,7 +36,7 @@ func TestCLIOnlyAppliesAfterHumanYes(t *testing.T) {
 		t.Fatal("wrote without approval")
 	}
 	out.Reset()
-	if err := runCLI("example tool", strings.NewReader("yes\n1\nfalse\nyes\n"), &out, finder); err != nil {
+	if err := runCLI("example tool", strings.NewReader("y\n1\nfalse\ny\n"), &out, finder); err != nil {
 		t.Fatal(err)
 	}
 	data, _ = os.ReadFile(path)
@@ -67,7 +68,7 @@ func TestCLICodeReadingRequiresSeparateConsent(t *testing.T) {
 	path := filepath.Join(root, "settings.json")
 	os.WriteFile(path, []byte(`{"mode":"auto"}`), 0600)
 	var out bytes.Buffer
-	err := runCLI("app", strings.NewReader("yes\n1\nno\nmanual\nno\n"), &out,
+	err := runCLI("app", strings.NewReader("y\n1\nN\nmanual\nN\n"), &out,
 		func([]localFile, string) ([]int, error) { return []int{0}, nil })
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +86,7 @@ func TestCLIExtraSearchRequiresSeparateConsent(t *testing.T) {
 	os.MkdirAll(root, 0700)
 	os.WriteFile(filepath.Join(root, "settings.json"), []byte(`{"enabled":true}`), 0600)
 	var out bytes.Buffer
-	err := runWorkflow("missing", strings.NewReader("yes\nno\n"), &out,
+	err := runWorkflow("missing", strings.NewReader("y\nN\n"), &out,
 		func([]localFile, string) ([]int, error) { return nil, nil }, false,
 		func([]localFile, string) ([]int, error) { t.Fatal("extra search without consent"); return nil, nil })
 	if err == nil || !strings.Contains(err.Error(), "追加探索せず") {
@@ -95,16 +96,29 @@ func TestCLIExtraSearchRequiresSeparateConsent(t *testing.T) {
 
 func TestCLIAsksForToolWhenNoArgument(t *testing.T) {
 	var out bytes.Buffer
-	err := runCLI("", strings.NewReader("Zed エディタ\nno\n"), &out,
+	err := runCLI("", strings.NewReader("Zed エディタ\nN\n"), &out,
 		func([]localFile, string) ([]int, error) { t.Fatal("searched without consent"); return nil, nil })
-	if err == nil || !strings.Contains(out.String(), "対象ツールを自然言語で指定") {
+	if err == nil || !strings.Contains(out.String(), "tool: ") {
 		t.Fatalf("unexpected prompt: %v / %s", err, out.String())
+	}
+}
+
+func TestConfirmationDefaultsToNo(t *testing.T) {
+	for _, example := range []struct {
+		input string
+		want  bool
+	}{{"y\n", true}, {"Y\n", true}, {"N\n", false}, {"\n", false}, {"yes\n", false}} {
+		var out bytes.Buffer
+		got, err := yes(bufio.NewReader(strings.NewReader(example.input)), &out, "確認")
+		if err != nil || got != example.want || !strings.Contains(out.String(), "[y/N]") {
+			t.Fatalf("input %q: approved=%t err=%v prompt=%s", example.input, got, err, out.String())
+		}
 	}
 }
 
 func TestCLINoSearchWithoutConsent(t *testing.T) {
 	var out bytes.Buffer
-	err := runCLI("example", strings.NewReader("no\n"), &out, func([]localFile, string) ([]int, error) { t.Fatal("finder called"); return nil, nil })
+	err := runCLI("example", strings.NewReader("N\n"), &out, func([]localFile, string) ([]int, error) { t.Fatal("finder called"); return nil, nil })
 	if err == nil {
 		t.Fatal("accepted without consent")
 	}
