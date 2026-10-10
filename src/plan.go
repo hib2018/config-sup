@@ -13,8 +13,21 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 )
+
+type field struct {
+	Path   []string
+	Type   string
+	Value  any
+	Target *target
+}
+type target struct {
+	ID   int
+	Path []string
+}
+type source struct {
+	Fields []field
+}
 
 type binding struct {
 	File string
@@ -31,8 +44,6 @@ type previewState struct {
 }
 type plan struct {
 	mu       sync.Mutex
-	Token    string
-	Created  time.Time
 	Bindings map[string]binding
 	Original map[string][]byte
 	Backups  map[string]string
@@ -83,12 +94,8 @@ func safeLocalFile(path string) error {
 	return errors.New("対象が許可された設定ディレクトリ外です")
 }
 
-func preparePlan(repo string, files []source, descriptions map[string]string, local []localFile) (any, *plan, error) {
-	token, err := newToken()
-	if err != nil {
-		return nil, nil, err
-	}
-	p := &plan{Token: token, Created: time.Now(), Bindings: map[string]binding{}, Original: map[string][]byte{}}
+func preparePlan(files []source, local []localFile) (*plan, error) {
+	p := &plan{Bindings: map[string]binding{}, Original: map[string][]byte{}}
 	valueCache := map[string][]localValue{}
 	seenTargets := map[string]bool{}
 	for fi := range files {
@@ -106,8 +113,9 @@ func preparePlan(repo string, files []source, descriptions map[string]string, lo
 			}
 			data, ok := p.Original[candidate.Path]
 			if !ok {
-				data, err = os.ReadFile(candidate.Path)
-				if err != nil || len(data) > 100_000 {
+				var readErr error
+				data, readErr = os.ReadFile(candidate.Path)
+				if readErr != nil || len(data) > 100_000 {
 					field.Target = nil
 					continue
 				}
@@ -132,19 +140,12 @@ func preparePlan(repo string, files []source, descriptions map[string]string, lo
 			p.Bindings[id] = binding{candidate.Path, field.Target.Path, field.Type}
 			seenTargets[targetKey] = true
 			field.Value = current // Show actual local value, not a model guess.
-			field.Target.File = candidate.Path
 		}
 	}
 	if len(p.Bindings) == 0 {
-		return nil, nil, errors.New("一致するローカルJSON設定項目が見つかりませんでした。候補は表示できますが適用できません")
+		return nil, errors.New("一致するローカル設定項目が見つかりませんでした")
 	}
-	return struct {
-		Repo         string            `json:"repo"`
-		Files        []source          `json:"files"`
-		Descriptions map[string]string `json:"descriptions"`
-		Agent        string            `json:"agent"`
-		Token        string            `json:"token"`
-	}{repo, files, descriptions, "AIによる説明（要確認）", token}, p, nil
+	return p, nil
 }
 
 func slicesEqualField(fields []localField, path []string, typ string) bool {

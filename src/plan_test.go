@@ -28,12 +28,12 @@ func TestLocalPlanPreviewAndApply(t *testing.T) {
 	if strings.Contains(string(metadata), "never send") || strings.Contains(string(metadata), "apiToken") {
 		t.Fatal("private data in agent metadata")
 	}
-	files := []source{{File: "config.json", Fields: []field{{Path: []string{"mode"}, Type: "string", Value: "default", Choices: []any{"auto", "manual"}, Target: &target{ID: 0, Path: []string{"mode"}}}}}}
-	_, plan, err := preparePlan("https://github.com/example/repo", files, nil, local)
+	files := []source{{Fields: []field{{Path: []string{"mode"}, Type: "string", Value: "default", Target: &target{ID: 0, Path: []string{"mode"}}}}}}
+	plan, err := preparePlan(files, local)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files[0].Fields[0].Value != "auto" || files[0].Fields[0].Target.File != path {
+	if files[0].Fields[0].Value != "auto" {
 		t.Fatalf("mapping: %#v", files)
 	}
 	if err := plan.apply("not-previewed"); err == nil {
@@ -75,8 +75,8 @@ func TestLocalPlanStopsChangedFile(t *testing.T) {
 	path := filepath.Join(root, "settings.json")
 	os.WriteFile(path, []byte(`{"enabled":true}`), 0600)
 	local, _ := scanLocal()
-	files := []source{{File: "settings.json", Fields: []field{{Path: []string{"enabled"}, Type: "boolean", Value: true, Target: &target{ID: 0, Path: []string{"enabled"}}}}}}
-	_, plan, err := preparePlan("repo", files, nil, local)
+	files := []source{{Fields: []field{{Path: []string{"enabled"}, Type: "boolean", Value: true, Target: &target{ID: 0, Path: []string{"enabled"}}}}}}
+	plan, err := preparePlan(files, local)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,13 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc",
     "start": "go run ./src",
     "tui": "go run ./src --tui",
     "test": "go test ./src && node --test src/*.test.mjs"
-  },
-  "devDependencies": {
-    "typescript": "^5.9.3"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^1.0.4",

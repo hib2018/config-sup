@@ -312,8 +312,8 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 			return errors.New("未対応の値です")
 		}
 	}
-	files := []source{{File: candidate.Path, Fields: []field{{Path: item.Path, Type: item.Type, Value: item.Value, Target: &target{ID: candidate.ID, Path: item.Path}}}}}
-	_, plan, err := preparePlan("local", files, nil, local)
+	files := []source{{Fields: []field{{Path: item.Path, Type: item.Type, Value: item.Value, Target: &target{ID: candidate.ID, Path: item.Path}}}}}
+	plan, err := preparePlan(files, local)
 	if err != nil {
 		return err
 	}

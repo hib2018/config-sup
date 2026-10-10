@@ -1,5 +1,5 @@
 import { createAgentSession, SessionManager } from '@earendil-works/pi-coding-agent';
-import { localTools, resources } from './agent.mjs';
+import { localTools, resources } from './pi-resources.mjs';
 
 export function validateCandidates(raw, local) {
   if (!Array.isArray(raw?.candidates)) throw Error('エージェントの応答形式が不正です');

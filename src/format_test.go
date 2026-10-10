@@ -38,11 +38,11 @@ func TestLocalYAMLAndTOMLApply(t *testing.T) {
 			}
 		}
 	}
-	files := []source{{File: "settings.yaml", Fields: []field{
+	files := []source{{Fields: []field{
 		{Path: []string{"first"}, Type: "string", Value: "auto", Target: &target{ID: ids[yamlPath], Path: []string{"mode"}}},
 		{Path: []string{"second"}, Type: "string", Value: "auto", Target: &target{ID: ids[tomlPath], Path: []string{"mode"}}},
 	}}}
-	_, plan, err := preparePlan("repo", files, nil, local)
+	plan, err := preparePlan(files, local)
 	if err != nil {
 		t.Fatal(err)
 	}

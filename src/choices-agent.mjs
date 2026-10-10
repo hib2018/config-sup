@@ -2,7 +2,7 @@ import { open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createAgentSession, SessionManager } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { resources } from './agent.mjs';
+import { resources } from './pi-resources.mjs';
 
 export function codeTools(paths) {
   const allowed = new Set(paths), read = new Map();

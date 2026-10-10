@@ -1,6 +1,0 @@
-<!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>config-sup</title><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
-<body><main><h1>config-sup</h1><p>公開GitHubリポジトリの設定項目を解析し、対応するローカル設定を探します。</p>
-<form id="analyze"><label for="url">GitHub URL</label><div class="row"><input id="url" type="url" required placeholder="https://github.com/owner/repo"><button>解析</button></div><label class="check"><input id="agent" type="checkbox" required> リポジトリの読み取り内容をPiのモデルへ送信する</label><label class="check"><input id="local" type="checkbox" required> ~/.config と ~/Library/Application Support のJSON・YAML・TOML設定を検索し、ファイル名・キー名・型（値は含まない）をPiのモデルへ送信する</label></form>
-<p id="status" role="status"></p><section id="editor" hidden><p class="disclaimer">AIによる説明（要確認）。AIが抽出した適用先・選択肢と差分を確認してください。</p><div id="fields"></div><button id="preview" type="button" disabled>差分を確認</button><section id="review" hidden><h2>適用前の差分</h2><pre id="diff"></pre><button id="apply" type="button">この変更を適用</button></section></section>
-</main></body></html>
