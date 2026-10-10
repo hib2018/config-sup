@@ -8,11 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -64,40 +64,14 @@ func yes(reader *bufio.Reader, out io.Writer, question string) (bool, error) {
 }
 
 func runCLI(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error)) error {
-	return runWorkflow(request, in, out, find, false, findApp)
+	return runWorkflow(request, in, out, find, false, findApp, describeSettings)
 }
 func runTUI(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error)) error {
-	return runWorkflow(request, in, out, find, true, findApp)
+	return runWorkflow(request, in, out, find, true, findApp, describeSettings)
 }
 func displayPath(path []string) string {
 	quoted := strconv.Quote(strings.Join(path, "."))
 	return quoted[1 : len(quoted)-1]
-}
-func pickTUI(values []localValue, counts map[string]int) (int, error) {
-	if _, err := exec.LookPath("fzf"); err != nil {
-		return 0, errors.New("TUIにはfzfが必要です。番号式CLIは --cli で起動できます")
-	}
-	rows := make([]string, len(values))
-	for index, value := range values {
-		suffix := ""
-		if counts[fmt.Sprintf("%q", value.Path)] > 1 {
-			suffix = " (重複)"
-		}
-		rows[index] = fmt.Sprintf("%d. %s = %s%s", index+1, displayPath(value.Path), printable(value.Value), suffix)
-	}
-	cmd := exec.Command("fzf", "--prompt", "設定項目> ", "--height", "~60%", "--layout", "reverse", "--no-multi")
-	cmd.Stdin = strings.NewReader(strings.Join(rows, "\n") + "\n")
-	cmd.Stderr = os.Stderr
-	selected, err := cmd.Output()
-	if err != nil {
-		return 0, errors.New("TUIの選択を中止しました")
-	}
-	for index, row := range rows {
-		if strings.TrimSuffix(string(selected), "\n") == row {
-			return index, nil
-		}
-	}
-	return 0, errors.New("不正な選択です")
 }
 func chooseFiles(reader *bufio.Reader, out io.Writer, local []localFile, ids []int) ([]int, error) {
 	if len(ids) == 0 {
@@ -159,13 +133,6 @@ func loadSelected(reader *bufio.Reader, out io.Writer, candidate localFile, requ
 			if err := safeApprovedDirectory(root); err != nil {
 				return nil, err
 			}
-			approved, err := yes(reader, out, fmt.Sprintf("設定ディレクトリへのリンク %q の参照先 %q 内だけを探索し、ファイル名をPiモデルへ送信してよいですか？ 内容はまだ読みません", alias, root))
-			if err != nil {
-				return nil, err
-			}
-			if !approved {
-				return nil, errors.New("リンク先を探索せずに終了しました")
-			}
 			directory, err := scanLinkedDirectory(root)
 			if err != nil {
 				return nil, err
@@ -199,13 +166,6 @@ func loadSelected(reader *bufio.Reader, out io.Writer, candidate localFile, requ
 			if err := safeApprovedTarget(file.Path); err != nil {
 				return nil, err
 			}
-			approved, err := yes(reader, out, fmt.Sprintf("設定リンク %q 経由のファイル %q を読み、最終確認後にこのファイルだけを書き換えてよいですか？ 内容のモデル送信は別途確認します", file.LinkAlias, file.Path))
-			if err != nil {
-				return nil, err
-			}
-			if !approved {
-				return nil, errors.New("リンク先を読まずに終了しました")
-			}
 			if err := approvedLinkStillPointsTo(file.LinkAlias, file.LinkRoot, file.Path); err != nil {
 				return nil, err
 			}
@@ -218,6 +178,10 @@ func loadSelected(reader *bufio.Reader, out io.Writer, candidate localFile, requ
 		}
 		if len(data) > 100_000 {
 			return nil, errors.New("設定ファイルは100KB以下に限ります")
+		}
+		if sensitiveContent(data) {
+			fmt.Fprintf(out, "候補 %q は機密情報を含む可能性があるため除外しました\n", file.Path)
+			continue
 		}
 		values, err := inspectValues(file.Path, data)
 		if err != nil || len(values) == 0 {
@@ -232,7 +196,7 @@ func loadSelected(reader *bufio.Reader, out io.Writer, candidate localFile, requ
 	}
 	return selected, nil
 }
-func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error), tui bool, appFinder func([]localFile, string) ([]int, error)) error {
+func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error), tui bool, appFinder func([]localFile, string) ([]int, error), describe func([]localValue, []string, string) (map[int]settingInfo, error)) error {
 	reader := bufio.NewReader(in)
 	if request == "" {
 		fmt.Fprint(out, "tool: ")
@@ -244,13 +208,6 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 	}
 	if request == "" {
 		return errors.New("ツールを指定してください")
-	}
-	ok, err := yes(reader, out, "~/.config と ~/Library/Application Support を検索し、ファイル名・キー名・型（値は含まない）をPiモデルへ送信してよいですか？")
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return errors.New("解析は取り消されました")
 	}
 	local, err := scanLocal()
 	if err != nil && !errors.Is(err, errNoLocal) {
@@ -265,13 +222,6 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 		}
 	}
 	if len(ids) == 0 {
-		approved, err := yes(reader, out, "初期範囲では対象を特定できませんでした。追加で /Applications と ~/Applications のアプリ名だけを読み取り専用で探し、Piモデルへ送ってよいですか？")
-		if err != nil {
-			return err
-		}
-		if !approved {
-			return errors.New("追加探索せず終了しました")
-		}
 		apps := scanApps()
 		if len(apps) == 0 {
 			return errors.New("追加範囲にアプリが見つかりませんでした")
@@ -332,146 +282,112 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 		selected = append(selected, loaded...)
 	}
 	local = nil
-	type setting struct {
-		id    int
-		value localValue
-		data  []byte
-	}
-	settings := []setting{}
+	settings := []settingEntry{}
 	values := []localValue{}
+	roots := []string{}
 	for _, selection := range selected {
 		selection.file.ID = len(local)
 		local = append(local, selection.file)
+		root := filepath.Dir(selection.file.Path)
+		home, _ := os.UserHomeDir()
+		if root != filepath.Join(home, ".config") && root != filepath.Join(home, "Library", "Application Support") {
+			roots = append(roots, root)
+		}
 		for _, value := range selection.values {
-			settings = append(settings, setting{selection.file.ID, value, selection.data})
+			settings = append(settings, settingEntry{selection.file.ID, value, selection.data})
 			values = append(values, value)
 		}
 	}
 	if len(values) == 0 {
 		return errors.New("安全に編集できる設定項目がありません")
 	}
+	if len(values) > 100 {
+		return errors.New("項目が100件を超えます。選択するファイルを絞ってください")
+	}
+	if appPath != "" {
+		roots = append(roots, appPath)
+	}
+	paths := scanCodePaths(roots)
+	if len(paths) > 300 {
+		paths = paths[:300]
+	}
+	infos, err := describe(values, paths, request)
+	if err != nil {
+		return err
+	}
 	counts := map[string]int{}
 	for _, value := range values {
 		counts[fmt.Sprintf("%q", value.Path)]++
 	}
-	index := 0
-	if tui {
-		index, err = pickTUI(values, counts)
-		if err != nil {
-			return err
-		}
-	} else {
-		fmt.Fprintln(out, "設定項目  現在の内容")
+	draft := map[int]any{}
+	for {
+		rows := make([]string, len(values))
 		for number, value := range values {
-			suffix := ""
-			if counts[fmt.Sprintf("%q", value.Path)] > 1 {
-				suffix = " (重複)"
-			}
-			fmt.Fprintf(out, "%d. %s = %s%s\n", number+1, displayPath(value.Path), printable(value.Value), suffix)
+			rows[number] = settingLabel(number, value, infos[number], counts[fmt.Sprintf("%q", value.Path)] > 1, draft[number])
 		}
-		fmt.Fprint(out, "変更する項目の番号（空欄で終了）: ")
-		choice, err := answer(reader)
+		index, err := selectSetting(reader, out, rows, tui)
 		if err != nil {
 			return err
 		}
-		if choice == "" {
-			return nil
+		if index < 0 {
+			break
 		}
-		number, err := strconv.Atoi(choice)
-		if err != nil || number < 1 || number > len(values) {
-			return errors.New("項目番号が不正です")
+		item := settings[index].value
+		if counts[fmt.Sprintf("%q", item.Path)] > 1 {
+			return errors.New("同名項目が複数ファイルにあるため編集できません。選択ファイルを絞ってください")
 		}
-		index = number - 1
-	}
-	item := settings[index].value
-	if counts[fmt.Sprintf("%q", item.Path)] > 1 {
-		return errors.New("同名項目が複数の設定ファイルにあるため編集できません。選択ファイルを絞って再実行してください")
-	}
-	candidate := local[settings[index].id]
-	data := settings[index].data
-	var choices []any
-	if item.Type != "boolean" {
-		roots := []string{filepath.Dir(candidate.Path)}
-		if appPath != "" {
-			roots = append(roots, appPath)
+		info := infos[index]
+		if info.Description == "" {
+			return errors.New("説明が取得できない項目は編集できません")
 		}
-		approved, err := yes(reader, out, "選択肢を調べるため"+fmt.Sprintf("%q", roots)+"内のソースコード名と必要なコード内容をPiモデルへ送信してよいですか？")
+		current := any(item.Value)
+		if changed, ok := draft[index]; ok {
+			current = changed
+		}
+		next, err := editSetting(reader, out, item, info, current)
 		if err != nil {
 			return err
 		}
-		if approved {
-			paths := scanCodePaths(roots)
-			if len(paths) > 0 {
-				choices, err = findChoices(paths, item, request)
-				if err != nil {
-					fmt.Fprintf(out, "選択肢の解析は利用できません: %v\n", err)
-				}
-			}
+		if reflect.DeepEqual(item.Value, next) {
+			delete(draft, index)
+		} else {
+			draft[index] = next
 		}
 	}
-	var next any
-	if len(choices) >= 2 {
-		fmt.Fprintln(out, "コードに根拠のある選択肢（推測を含む可能性があるため確認してください）:")
-		for number, value := range choices {
-			fmt.Fprintf(out, "%d. %s\n", number+1, printable(value))
-		}
-		fmt.Fprint(out, "番号で選択（0で自由入力）: ")
-		choice, err := answer(reader)
-		if err != nil {
-			return err
-		}
-		number, err := strconv.Atoi(choice)
-		if err != nil || number < 0 || number > len(choices) {
-			return errors.New("選択番号が不正です")
-		}
-		if number > 0 {
-			next = choices[number-1]
-		}
+	if len(draft) == 0 {
+		return nil
 	}
-	if next == nil && item.Type == "boolean" {
-		fmt.Fprint(out, "新しい値（true/false）: ")
-	} else if next == nil && item.Type == "number" {
-		fmt.Fprint(out, "新しい数値: ")
-	} else if next == nil {
-		fmt.Fprint(out, "新しい文字列: ")
+	indexes := make([]int, 0, len(draft))
+	for index := range draft {
+		indexes = append(indexes, index)
 	}
-	if next == nil {
-		text, err := answer(reader)
-		if err != nil {
-			return err
-		}
-		switch item.Type {
-		case "boolean":
-			if text != "true" && text != "false" {
-				return errors.New("true または false を入力してください")
-			}
-			next = text == "true"
-		case "number":
-			number, err := strconv.ParseFloat(text, 64)
-			if err != nil || math.IsNaN(number) || math.IsInf(number, 0) || math.Abs(number) > 9007199254740991 {
-				return errors.New("有効な数値を入力してください")
-			}
-			next = number
-		case "string":
-			next = text
-		default:
-			return errors.New("未対応の値です")
-		}
+	sort.Ints(indexes)
+	fields := []field{}
+	changes := []pendingChange{}
+	for _, index := range indexes {
+		item := settings[index]
+		fields = append(fields, field{Path: item.value.Path, Type: item.value.Type, Value: item.value.Value, Target: &target{ID: item.id, Path: item.value.Path}})
+		changes = append(changes, pendingChange{ID: fmt.Sprintf("0:%d", len(fields)-1), Value: draft[index]})
 	}
-	files := []source{{Fields: []field{{Path: item.Path, Type: item.Type, Value: item.Value, Target: &target{ID: candidate.ID, Path: item.Path}}}}}
+	files := []source{{Fields: fields}}
 	plan, err := preparePlan(files, local)
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(data, plan.Original[candidate.Path]) || !reflect.DeepEqual(item.Value, files[0].Fields[0].Value) {
-		return errors.New("一覧表示後に設定ファイルが変わりました。再解析してください")
+	for i, index := range indexes {
+		setting := settings[index]
+		if !bytes.Equal(setting.data, plan.Original[local[setting.id].Path]) || !reflect.DeepEqual(setting.value.Value, files[0].Fields[i].Value) {
+			return errors.New("一覧表示後に設定ファイルが変わりました。再解析してください")
+		}
 	}
-	previewID, _, err := plan.preview([]pendingChange{{ID: "0:0", Value: next}})
+	previewID, _, err := plan.preview(changes)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "%s: %s → %s\n", displayPath(item.Path), printable(item.Value), printable(next))
-	ok, err = yes(reader, out, "この設定内容を適用しますか？")
+	for _, index := range indexes {
+		fmt.Fprintf(out, "%s: %s → %s\n", infos[index].Description, printable(settings[index].value.Value), printable(draft[index]))
+	}
+	ok, err := yes(reader, out, "この設定内容を適用しますか？")
 	if err != nil {
 		return err
 	}

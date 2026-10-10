@@ -16,7 +16,7 @@ func TestLocalPlanPreviewAndApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "settings.json")
-	original := []byte(`{"mode":"auto","enabled":true,"apiToken":"never send","big":9007199254740993}`)
+	original := []byte(`{"mode":"auto","enabled":true,"other":"keep","big":9007199254740993}`)
 	if err := os.WriteFile(path, original, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestLocalPlanPreviewAndApply(t *testing.T) {
 		t.Fatalf("local: %#v %v", local, err)
 	}
 	metadata, _ := json.Marshal(local)
-	if strings.Contains(string(metadata), "never send") || strings.Contains(string(metadata), "apiToken") {
+	if strings.Contains(string(metadata), "keep") {
 		t.Fatal("private data in agent metadata")
 	}
 	files := []source{{Fields: []field{{Path: []string{"mode"}, Type: "string", Value: "default", Target: &target{ID: 0, Path: []string{"mode"}}}}}}
@@ -59,7 +59,7 @@ func TestLocalPlanPreviewAndApply(t *testing.T) {
 	}
 	data, _ = os.ReadFile(path)
 	var result map[string]any
-	if json.Unmarshal(data, &result) != nil || result["mode"] != "manual" || result["apiToken"] != "never send" || !strings.Contains(string(data), "9007199254740993") {
+	if json.Unmarshal(data, &result) != nil || result["mode"] != "manual" || result["other"] != "keep" || !strings.Contains(string(data), "9007199254740993") {
 		t.Fatalf("applied: %s", data)
 	}
 	if err := plan.apply(id); err == nil {

@@ -30,7 +30,7 @@ func scanCodePaths(roots []string) []string {
 				return nil
 			}
 			ext := strings.ToLower(filepath.Ext(path))
-			if !slices.Contains([]string{".js", ".mjs", ".cjs", ".ts", ".go", ".rs", ".py", ".md"}, ext) && !(ext == ".json" && strings.Contains(strings.ToLower(entry.Name()), "schema")) {
+			if !slices.Contains([]string{".js", ".mjs", ".cjs", ".ts", ".go", ".rs", ".py", ".lua", ".md"}, ext) && !(ext == ".json" && strings.Contains(strings.ToLower(entry.Name()), "schema")) {
 				return nil
 			}
 			info, err := entry.Info()

@@ -2,7 +2,7 @@ import YAML, { isMap, isScalar } from 'yaml';
 import * as TOML from '@iarna/toml';
 
 const typeOf = value => typeof value === 'string' || typeof value === 'boolean' ? typeof value : typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER ? 'number' : null;
-const safePath = path => path.every(key => typeof key === 'string' && key && !/auth|token|secret|credential|password|keychain|session/i.test(key) && !['__proto__','constructor','prototype'].includes(key));
+const safePath = path => path.every(key => typeof key === 'string' && key && !/auth|token|secret|credential|password|keychain|session|api[_-]?key|private|ssh|bearer|oauth|keyring|access[_-]?key|\.env/i.test(key) && !['__proto__','constructor','prototype'].includes(key));
 const jsonValue = value => JSON.stringify(value);
 const equalPath = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 

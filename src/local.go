@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type localField struct {
@@ -29,8 +30,13 @@ type localFile struct {
 	LinkRoot  string       `json:"-"`
 }
 
-var privateName = regexp.MustCompile(`(?i)(auth|token|secret|credential|password|keychain|session)`)
+var privateName = regexp.MustCompile(`(?i)(auth|token|secret|credential|password|keychain|session|api[_-]?key|private|ssh|bearer|oauth|keyring|access[_-]?key|(^|[._-])keys?([._-]|$)|keyfile|keystore|\.env|^env[._-]|^id_(rsa|ed25519)|\.(pem|key|p12|pfx|kdbx)$)`)
 var errNoLocal = errors.New("対象範囲に編集可能なローカル設定が見つかりませんでした")
+var sensitiveText = regexp.MustCompile(`(?i)(auth|token|secret|credential|password|keychain|session|api[_-]?key|private|ssh|bearer|oauth|keyring|access[_-]?key|(^|[^a-z])keys?([^a-z]|$)|keyfile|keystore|BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{16,}|[A-Za-z0-9+/=_-]{40,})`)
+
+func sensitiveContent(data []byte) bool {
+	return !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 || sensitiveText.Match(data)
+}
 
 func primitivePaths(value any) []localField {
 	fields := []localField{}
@@ -126,9 +132,13 @@ func scanLocal() ([]localFile, error) {
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			files = append(files, localFile{ID: len(files), Path: path, Link: true})
-			continue // The target is outside the approved scope until separately authorized.
+			continue // Only the selected link target may be explored, after path checks.
 		}
 		if !info.Mode().IsRegular() || info.Size() > 100_000 || safeLocalFile(path) != nil {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || len(data) > 100_000 || sensitiveContent(data) {
 			continue
 		}
 		file := localFile{ID: len(files), Path: path}
@@ -136,11 +146,9 @@ func scanLocal() ([]localFile, error) {
 			if fileFormat(path) != "json" {
 				foreignReads++
 			}
-			if data, err := os.ReadFile(path); err == nil && len(data) <= 100_000 {
-				if values, err := inspectValues(path, data); err == nil {
-					for _, value := range values {
-						file.Fields = append(file.Fields, localField{value.Path, value.Type})
-					}
+			if values, err := inspectValues(path, data); err == nil {
+				for _, value := range values {
+					file.Fields = append(file.Fields, localField{value.Path, value.Type})
 				}
 			}
 		}

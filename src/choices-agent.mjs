@@ -4,11 +4,13 @@ import { createAgentSession, SessionManager } from '@earendil-works/pi-coding-ag
 import { Type } from 'typebox';
 import { resources } from './pi-resources.mjs';
 
+export const sensitiveSource = text => /auth|token|secret|credential|password|keychain|session|api[_-]?key|private|ssh|bearer|oauth|keyring|access[_-]?key|(^|[^a-z])keys?([^a-z]|$)|keyfile|keystore|BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{16,}|[A-Za-z0-9+/=_-]{40,}/i.test(text);
+
 export function codeTools(paths) {
   const allowed = new Set(paths), read = new Map();
   let count = 0, bytes = 0;
   return { read, tools: [
-    { name: 'search_code', label: 'Search source names', description: 'Search allowlisted code and schema file names in the approved tool directories.', parameters: Type.Object({ query: Type.String() }),
+    { name: 'search_code', label: 'Search source names', description: 'Search allowlisted code and schema file names in the selected tool directories.', parameters: Type.Object({ query: Type.String() }),
       execute: async (_id, { query }) => { const found = paths.filter(path => path.toLowerCase().includes(query.toLowerCase())); return { content: [{ type: 'text', text: JSON.stringify({ total: found.length, paths: found.slice(0, 60) }) }] }; } },
     { name: 'read_code', label: 'Read source', description: 'Read one allowlisted source file, max 50KB/file and 200KB in total. Never executes it.', parameters: Type.Object({ path: Type.String() }),
       execute: async (_id, { path }) => {
@@ -19,7 +21,9 @@ export function codeTools(paths) {
           try {
             const info = await file.stat();
             if (!info.isFile() || info.size > 50_000 || bytes + info.size > 200_000) return { content: [{ type: 'text', text: 'File exceeds limit' }] };
-            const content = await file.readFile('utf8');
+            const raw = await file.readFile();
+            const content = raw.toString('utf8');
+            if (!Buffer.from(content, 'utf8').equals(raw) || content.includes('\0') || sensitiveSource(content)) return { content: [{ type: 'text', text: 'Sensitive-looking source was excluded' }] };
             bytes += Buffer.byteLength(content); read.set(path, content);
             return { content: [{ type: 'text', text: content }] };
           } finally { await file.close(); }

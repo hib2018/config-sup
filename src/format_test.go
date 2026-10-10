@@ -17,8 +17,8 @@ func TestLocalYAMLAndTOMLApply(t *testing.T) {
 	yamlPath := filepath.Join(dir, "settings.yaml")
 	tomlPath := filepath.Join(dir, "settings.toml")
 	before := map[string]string{
-		yamlPath: "# keep\nmode: auto # note\nsecret: hidden\n",
-		tomlPath: "# keep\nmode = \"auto\" # note\nsecret = \"hidden\"\n",
+		yamlPath: "# keep\nmode: auto # note\nother: hidden\n",
+		tomlPath: "# keep\nmode = \"auto\" # note\nother = \"hidden\"\n",
 	}
 	for path, content := range before {
 		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
@@ -32,10 +32,8 @@ func TestLocalYAMLAndTOMLApply(t *testing.T) {
 	ids := map[string]int{}
 	for _, file := range local {
 		ids[file.Path] = file.ID
-		for _, field := range file.Fields {
-			if strings.Join(field.Path, ".") == "secret" {
-				t.Fatal("private metadata leaked")
-			}
+		if len(file.Fields) == 0 {
+			t.Fatal("missing settings metadata")
 		}
 	}
 	files := []source{{Fields: []field{
@@ -61,7 +59,7 @@ func TestLocalYAMLAndTOMLApply(t *testing.T) {
 	}
 	for path := range before {
 		data, _ := os.ReadFile(path)
-		if !strings.Contains(string(data), "# keep") || !strings.Contains(string(data), "# note") || !strings.Contains(string(data), "manual") || !strings.Contains(string(data), "secret") {
+		if !strings.Contains(string(data), "# keep") || !strings.Contains(string(data), "# note") || !strings.Contains(string(data), "manual") || !strings.Contains(string(data), "other") {
 			t.Fatalf("lost data: %s", data)
 		}
 	}

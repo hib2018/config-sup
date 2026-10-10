@@ -42,15 +42,14 @@ type previewState struct {
 	ID    string
 	Files map[string][]byte
 }
+type approvedLink struct{ alias, root string }
 type plan struct {
-	mu           sync.Mutex
-	Bindings     map[string]binding
-	Original     map[string][]byte
-	Backups      map[string]string
-	Pending      *previewState
-	ApprovedFile string
-	LinkAlias    string
-	LinkRoot     string
+	mu       sync.Mutex
+	Bindings map[string]binding
+	Original map[string][]byte
+	Backups  map[string]string
+	Pending  *previewState
+	Approved map[string]approvedLink
 }
 
 func newToken() (string, error) {
@@ -115,6 +114,9 @@ func safeApprovedPath(path string, directory bool) error {
 	current := home
 	parts := strings.Split(rel, string(os.PathSeparator))
 	for i, part := range parts {
+		if privateName.MatchString(part) {
+			return errors.New("機密情報を含む可能性のあるリンク先は解析しません")
+		}
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
@@ -139,28 +141,29 @@ func approvedLinkStillPointsTo(alias, root, file string) error {
 		}
 		rel, err := filepath.Rel(root, file)
 		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			return errors.New("選択ファイルが承認範囲外です")
+			return errors.New("選択ファイルが探索範囲外です")
 		}
 		want = root
 	}
 	resolved, err := filepath.EvalSymlinks(alias)
 	if err != nil || resolved != want {
-		return errors.New("承認後にリンク先が変更されました")
+		return errors.New("解析後にリンク先が変更されました")
 	}
 	return nil
 }
 func (p *plan) safeFile(path string) error {
-	if path != p.ApprovedFile {
+	link, ok := p.Approved[path]
+	if !ok {
 		return safeLocalFile(path)
 	}
 	if err := safeApprovedTarget(path); err != nil {
 		return err
 	}
-	return approvedLinkStillPointsTo(p.LinkAlias, p.LinkRoot, path)
+	return approvedLinkStillPointsTo(link.alias, link.root, path)
 }
 
 func preparePlan(files []source, local []localFile) (*plan, error) {
-	p := &plan{Bindings: map[string]binding{}, Original: map[string][]byte{}}
+	p := &plan{Bindings: map[string]binding{}, Original: map[string][]byte{}, Approved: map[string]approvedLink{}}
 	valueCache := map[string][]localValue{}
 	seenTargets := map[string]bool{}
 	for fi := range files {
@@ -177,7 +180,7 @@ func preparePlan(files []source, local []localFile) (*plan, error) {
 				continue
 			}
 			if candidate.Approved {
-				p.ApprovedFile, p.LinkAlias, p.LinkRoot = candidate.Path, candidate.LinkAlias, candidate.LinkRoot
+				p.Approved[candidate.Path] = approvedLink{candidate.LinkAlias, candidate.LinkRoot}
 			}
 			if p.safeFile(candidate.Path) != nil {
 				field.Target = nil
@@ -402,7 +405,7 @@ func (p *plan) apply(id string) error {
 	slices.SortFunc(stages, func(a, b staged) int { return strings.Compare(a.path, b.path) })
 	for _, stage := range stages {
 		backupDir := filepath.Dir(stage.path)
-		if stage.path == p.ApprovedFile {
+		if _, approved := p.Approved[stage.path]; approved {
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return err

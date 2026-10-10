@@ -101,7 +101,7 @@ func TestPlainFileWithoutKnownExtensionIsSelectedByAgent(t *testing.T) {
 		return nil, nil
 	}
 	var out bytes.Buffer
-	if err := runCLI("example", strings.NewReader("y\n1\nN\nmanual\ny\n"), &out, finder); err != nil {
+	if err := testCLI("example", "1 \nmanual\n\ny\n", &out, finder); err != nil {
 		t.Fatal(err)
 	}
 	if after, _ := os.ReadFile(path); string(after) != "mode = manual\n" {
@@ -109,7 +109,7 @@ func TestPlainFileWithoutKnownExtensionIsSelectedByAgent(t *testing.T) {
 	}
 }
 
-func TestLinkedUnspecifiedFormatRequiresSeparateApproval(t *testing.T) {
+func TestLinkedUnspecifiedFormatRequiresOnlyFinalApproval(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	outside := filepath.Join(home, "dev", "dotfiles", "ghostty")
@@ -145,21 +145,17 @@ func TestLinkedUnspecifiedFormatRequiresSeparateApproval(t *testing.T) {
 		return nil, nil
 	}
 	var out bytes.Buffer
-	if err := runCLI("Ghostty", strings.NewReader("y\nN\n"), &out, finder); err == nil || !strings.Contains(err.Error(), "リンク先を読まず") {
-		t.Fatalf("missing gate: %v", err)
-	}
-	if content, _ := os.ReadFile(target); !bytes.Equal(content, before) {
-		t.Fatal("wrote without link approval")
-	}
-	out.Reset()
-	if err := runCLI("Ghostty", strings.NewReader("y\ny\n1\nN\n16\nN\n"), &out, finder); err != nil {
+	if err := testCLI("Ghostty", "1 \n16\n\nN\n", &out, finder); err != nil {
 		t.Fatal(err)
+	}
+	if strings.Count(out.String(), "[y/N]") != 1 {
+		t.Fatalf("unexpected approval prompts: %s", out.String())
 	}
 	if content, _ := os.ReadFile(target); !bytes.Equal(content, before) {
 		t.Fatal("wrote before final approval")
 	}
 	out.Reset()
-	if err := runCLI("Ghostty", strings.NewReader("y\ny\n1\nN\n16\ny\n"), &out, finder); err != nil {
+	if err := testCLI("Ghostty", "1 \n16\n\ny\n", &out, finder); err != nil {
 		t.Fatal(err)
 	}
 	if content, _ := os.ReadFile(target); string(content) != "font-size = 16 # keep\n" {

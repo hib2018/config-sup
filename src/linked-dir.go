@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Called only after the human approves this exact resolved directory and filename transfer.
+// Scan only safe regular files under the resolved local link target.
 func scanLinkedDirectory(root string) ([]localFile, error) {
 	if err := safeApprovedDirectory(root); err != nil {
 		return nil, err
@@ -31,7 +31,9 @@ func scanLinkedDirectory(root string) ([]localFile, error) {
 		}
 		info, err := entry.Info()
 		if err == nil && info.Size() <= 100_000 {
-			paths = append(paths, path)
+			if data, err := os.ReadFile(path); err == nil && !sensitiveContent(data) {
+				paths = append(paths, path)
+			}
 		}
 		return nil
 	})

@@ -41,6 +41,67 @@ func TestApprovedDirectoryLinkRejectsRetargeting(t *testing.T) {
 	}
 }
 
+func TestMultipleLinkedFilesCanApplyTogether(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	inside := filepath.Join(home, ".config", "sample")
+	outside := filepath.Join(home, "dev", "dotfiles")
+	for _, dir := range []string{inside, outside} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	aliases := []string{}
+	targets := []string{}
+	for _, name := range []string{"first", "second"} {
+		target := filepath.Join(outside, name)
+		alias := filepath.Join(inside, name)
+		if err := os.WriteFile(target, []byte(name+" = auto\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, alias); err != nil {
+			t.Fatal(err)
+		}
+		aliases = append(aliases, alias)
+		targets = append(targets, target)
+	}
+	var out bytes.Buffer
+	if err := testCLI("sample", "1,2\n1 \nmanual\n2 \nmanual\n\ny\n", &out, fixtureFinder(aliases...)); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range targets {
+		if data, _ := os.ReadFile(path); !strings.Contains(string(data), "manual") {
+			t.Fatalf("missing link edit: %q", data)
+		}
+	}
+	backups, err := os.ReadDir(filepath.Join(home, ".local", "state", "config-sup", "backups"))
+	if err != nil || len(backups) != 2 {
+		t.Fatalf("missing backups: %#v %v", backups, err)
+	}
+}
+
+func TestLinkedDirectoryExcludesSensitiveFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "dev", "dotfiles", "nvim")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"init.lua": "number = true\n", ".env": "KEY=abc\n", "config.lua": "password = hello\n", "keys.json": `{"enabled":true}`} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := scanLinkedDirectory(resolved)
+	if err != nil || len(files) != 1 || files[0].Path != filepath.Join(resolved, "init.lua") {
+		t.Fatalf("sensitive path exposed: %#v %v", files, err)
+	}
+}
+
 func TestLinkedDirectoryCanSelectMultipleFilesForOneList(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -82,11 +143,11 @@ func TestLinkedDirectoryCanSelectMultipleFilesForOneList(t *testing.T) {
 		return ids, nil
 	}
 	var out bytes.Buffer
-	if err := runCLI("neovim", strings.NewReader("y\ny\n1,2\ny\ny\n2\nN\nfalse\nN\n"), &out, find); err != nil {
+	if err := testCLI("neovim", "1,2\n2 \nfalse\n\nN\n", &out, find); err != nil {
 		t.Fatal(err)
 	}
-	listing := strings.SplitN(strings.SplitN(out.String(), "設定項目  現在の内容\n", 2)[1], "変更する項目の番号", 2)[0]
-	if !strings.Contains(listing, `mode = "auto"`) || !strings.Contains(listing, `number = "true"`) || strings.Contains(listing, "init.lua") {
+	listing := out.String()
+	if !strings.Contains(listing, "動作モード") || !strings.Contains(listing, "設定内容") || strings.Contains(listing, "init.lua =") {
 		t.Fatalf("listing: %s", listing)
 	}
 	if after, _ := os.ReadFile(filepath.Join(root, "options.lua")); string(after) != "number = true\n" {
@@ -94,7 +155,7 @@ func TestLinkedDirectoryCanSelectMultipleFilesForOneList(t *testing.T) {
 	}
 }
 
-func TestLinkedDirectoryNeedsApprovalBeforeFileNamesAndContents(t *testing.T) {
+func TestLinkedDirectoryNeedsOnlyFinalApproval(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	root := filepath.Join(home, ".config", "nvim")
@@ -132,27 +193,18 @@ func TestLinkedDirectoryNeedsApprovalBeforeFileNamesAndContents(t *testing.T) {
 		return nil, nil
 	}
 	var out bytes.Buffer
-	err = runCLI("neovim", strings.NewReader("y\nN\n"), &out, find)
-	if err == nil || !strings.Contains(err.Error(), "リンク先を探索せず") || calls != 1 {
-		t.Fatalf("read names without consent: %v calls=%d", err, calls)
-	}
-	calls = 0
-	out.Reset()
-	err = runCLI("neovim", strings.NewReader("y\ny\nN\n"), &out, find)
-	if err == nil || !strings.Contains(err.Error(), "リンク先を読まず") || calls != 2 {
-		t.Fatalf("read file without consent: %v calls=%d", err, calls)
-	}
-	calls = 0
-	out.Reset()
-	if err := runCLI("neovim", strings.NewReader("y\ny\ny\n1\nN\nfalse\nN\n"), &out, find); err != nil {
+	if err := testCLI("neovim", "1 \nfalse\n\nN\n", &out, find); err != nil {
 		t.Fatal(err)
+	}
+	if calls != 2 || strings.Count(out.String(), "[y/N]") != 1 {
+		t.Fatalf("unexpected approval flow: %s", out.String())
 	}
 	if after, _ := os.ReadFile(file); !bytes.Equal(after, before) {
 		t.Fatal("wrote before final approval")
 	}
 	calls = 0
 	out.Reset()
-	if err := runCLI("neovim", strings.NewReader("y\ny\ny\n1\nN\nfalse\ny\n"), &out, find); err != nil {
+	if err := testCLI("neovim", "1 \nfalse\n\ny\n", &out, find); err != nil {
 		t.Fatal(err)
 	}
 	if after, _ := os.ReadFile(file); string(after) != "vim.opt.number = false\n" {
