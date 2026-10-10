@@ -93,6 +93,15 @@ func TestCLIExtraSearchRequiresSeparateConsent(t *testing.T) {
 	}
 }
 
+func TestCLIAsksForToolWhenNoArgument(t *testing.T) {
+	var out bytes.Buffer
+	err := runCLI("", strings.NewReader("Zed エディタ\nno\n"), &out,
+		func([]localFile, string) ([]int, error) { t.Fatal("searched without consent"); return nil, nil })
+	if err == nil || !strings.Contains(out.String(), "対象ツールを自然言語で指定") {
+		t.Fatalf("unexpected prompt: %v / %s", err, out.String())
+	}
+}
+
 func TestCLINoSearchWithoutConsent(t *testing.T) {
 	var out bytes.Buffer
 	err := runCLI("example", strings.NewReader("no\n"), &out, func([]localFile, string) ([]int, error) { t.Fatal("finder called"); return nil, nil })

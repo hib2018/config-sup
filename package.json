@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc",
     "start": "go run ./src",
+    "tui": "go run ./src --tui",
     "test": "go test ./src && node --test src/*.test.mjs"
   },
   "devDependencies": {
