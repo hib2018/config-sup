@@ -20,9 +20,12 @@ type localField struct {
 	Type string   `json:"type"`
 }
 type localFile struct {
-	ID     int          `json:"id"`
-	Path   string       `json:"path"`
-	Fields []localField `json:"fields"`
+	ID        int          `json:"id"`
+	Path      string       `json:"path"`
+	Fields    []localField `json:"fields"`
+	Link      bool         `json:"link,omitempty"`
+	Approved  bool         `json:"-"`
+	LinkAlias string       `json:"-"`
 }
 
 var privateName = regexp.MustCompile(`(?i)(auth|token|secret|credential|password|keychain|session)`)
@@ -90,7 +93,7 @@ func scanLocal() ([]localFile, error) {
 				}
 				return nil
 			}
-			if len(paths) < 5000 && entry.Type().IsRegular() && fileFormat(path) != "" && !privateName.MatchString(entry.Name()) {
+			if len(paths) < 5000 && (entry.Type().IsRegular() || entry.Type()&os.ModeSymlink != 0) && !privateName.MatchString(entry.Name()) {
 				paths = append(paths, path)
 			}
 			return nil
@@ -117,30 +120,30 @@ func scanLocal() ([]localFile, error) {
 			break
 		}
 		info, err := os.Lstat(path)
-		if err != nil || !info.Mode().IsRegular() || info.Size() > 100_000 || safeLocalFile(path) != nil {
-			continue
-		}
-		if fileFormat(path) != "json" {
-			if foreignReads >= 100 {
-				continue
-			}
-			foreignReads++
-		}
-		data, err := os.ReadFile(path)
-		if err != nil || len(data) > 100_000 {
-			continue
-		}
-		values, err := inspectValues(path, data)
 		if err != nil {
 			continue
 		}
-		fields := []localField{}
-		for _, value := range values {
-			fields = append(fields, localField{value.Path, value.Type})
+		if info.Mode()&os.ModeSymlink != 0 {
+			files = append(files, localFile{ID: len(files), Path: path, Link: true})
+			continue // The target is outside the approved scope until separately authorized.
 		}
-		if len(fields) > 0 {
-			files = append(files, localFile{len(files), path, fields})
+		if !info.Mode().IsRegular() || info.Size() > 100_000 || safeLocalFile(path) != nil {
+			continue
 		}
+		file := localFile{ID: len(files), Path: path}
+		if fileFormat(path) != "" && (fileFormat(path) == "json" || foreignReads < 100) {
+			if fileFormat(path) != "json" {
+				foreignReads++
+			}
+			if data, err := os.ReadFile(path); err == nil && len(data) <= 100_000 {
+				if values, err := inspectValues(path, data); err == nil {
+					for _, value := range values {
+						file.Fields = append(file.Fields, localField{value.Path, value.Type})
+					}
+				}
+			}
+		}
+		files = append(files, file)
 	}
 	if len(files) == 0 {
 		return nil, errNoLocal

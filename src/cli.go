@@ -206,6 +206,34 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 		return errors.New("不正な候補です")
 	}
 	candidate := local[id]
+	if candidate.Link {
+		resolved, err := filepath.EvalSymlinks(candidate.Path)
+		if err != nil {
+			return fmt.Errorf("リンク先を確認できません: %w", err)
+		}
+		if err := safeApprovedTarget(resolved); err != nil {
+			return err
+		}
+		approved, err := yes(reader, out, fmt.Sprintf("設定リンク %q の参照先 %q（初期範囲外の可能性あり）を読み、承認後には参照先だけを書き換えてよいですか？ 内容のモデル送信は別途確認します", candidate.Path, resolved))
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return errors.New("リンク先を読まずに終了しました")
+		}
+		candidate.Path, candidate.LinkAlias, candidate.Approved = resolved, candidate.Path, true
+		local[id] = candidate
+	}
+	if candidate.Approved {
+		if err := safeApprovedTarget(candidate.Path); err != nil {
+			return err
+		}
+		if current, err := filepath.EvalSymlinks(candidate.LinkAlias); err != nil || current != candidate.Path {
+			return errors.New("承認後にリンク先が変更されました")
+		}
+	} else if err := safeLocalFile(candidate.Path); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(candidate.Path)
 	if err != nil {
 		return err
@@ -215,7 +243,11 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 		return err
 	}
 	if len(values) == 0 {
-		return errors.New("表示可能な設定項目がありません")
+		return errors.New("安全に編集できる設定項目がありません")
+	}
+	local[id].Fields = nil
+	for _, value := range values {
+		local[id].Fields = append(local[id].Fields, localField{Path: value.Path, Type: value.Type})
 	}
 	index := 0
 	if tui {

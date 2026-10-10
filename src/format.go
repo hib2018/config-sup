@@ -79,7 +79,11 @@ func inspectValues(path string, data []byte) ([]localValue, error) {
 		return fields, nil
 	}
 	if format == "" {
-		return nil, errors.New("未対応の形式です")
+		values := inspectPlain(data)
+		if len(values) == 0 {
+			return nil, errors.New("安全に編集できる項目がありません")
+		}
+		return values, nil
 	}
 	var fields []localValue
 	err := formatScript(map[string]any{"action": "inspect", "format": format, "text": string(data)}, &fields)
@@ -100,6 +104,9 @@ func localValueAt(fields []localValue, path []string) (any, string, bool) {
 	return nil, "", false
 }
 func patchForeign(path string, original []byte, changes []formatChange) ([]byte, error) {
+	if fileFormat(path) == "" {
+		return patchPlain(original, changes)
+	}
 	var text string
 	if err := formatScript(map[string]any{"action": "patch", "format": fileFormat(path), "text": string(original), "changes": changes}, &text); err != nil {
 		return nil, err

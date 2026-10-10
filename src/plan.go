@@ -43,11 +43,13 @@ type previewState struct {
 	Files map[string][]byte
 }
 type plan struct {
-	mu       sync.Mutex
-	Bindings map[string]binding
-	Original map[string][]byte
-	Backups  map[string]string
-	Pending  *previewState
+	mu           sync.Mutex
+	Bindings     map[string]binding
+	Original     map[string][]byte
+	Backups      map[string]string
+	Pending      *previewState
+	ApprovedFile string
+	LinkAlias    string
 }
 
 func newToken() (string, error) {
@@ -94,6 +96,47 @@ func safeLocalFile(path string) error {
 	return errors.New("対象が許可された設定ディレクトリ外です")
 }
 
+func safeApprovedTarget(path string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	home, err = filepath.EvalSymlinks(home)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(home, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return errors.New("リンク先がホームディレクトリ外です")
+	}
+	current := home
+	parts := strings.Split(rel, string(os.PathSeparator))
+	for i, part := range parts {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("リンク先に別のシンボリックリンクが含まれます")
+		}
+		if i == len(parts)-1 && (!info.Mode().IsRegular() || info.Size() > 100_000) {
+			return errors.New("リンク先は100KB以下の通常ファイルに限ります")
+		}
+	}
+	return nil
+}
+func (p *plan) safeFile(path string) error {
+	if path != p.ApprovedFile {
+		return safeLocalFile(path)
+	}
+	if err := safeApprovedTarget(path); err != nil {
+		return err
+	}
+	resolved, err := filepath.EvalSymlinks(p.LinkAlias)
+	if err != nil || resolved != path {
+		return errors.New("承認後にリンク先が変更されました")
+	}
+	return nil
+}
+
 func preparePlan(files []source, local []localFile) (*plan, error) {
 	p := &plan{Bindings: map[string]binding{}, Original: map[string][]byte{}}
 	valueCache := map[string][]localValue{}
@@ -107,7 +150,14 @@ func preparePlan(files []source, local []localFile) (*plan, error) {
 			}
 			candidate := local[field.Target.ID]
 			targetKey := candidate.Path + "\x00" + strings.Join(field.Target.Path, "\x00")
-			if seenTargets[targetKey] || !slicesEqualField(candidate.Fields, field.Target.Path, field.Type) || safeLocalFile(candidate.Path) != nil {
+			if seenTargets[targetKey] || !slicesEqualField(candidate.Fields, field.Target.Path, field.Type) {
+				field.Target = nil
+				continue
+			}
+			if candidate.Approved {
+				p.ApprovedFile, p.LinkAlias = candidate.Path, candidate.LinkAlias
+			}
+			if p.safeFile(candidate.Path) != nil {
 				field.Target = nil
 				continue
 			}
@@ -196,7 +246,7 @@ func (p *plan) preview(changes []pendingChange) (string, string, error) {
 		}
 		seen[change.ID] = true
 		if !loaded[binding.File] {
-			if err := safeLocalFile(binding.File); err != nil {
+			if err := p.safeFile(binding.File); err != nil {
 				return "", "", err
 			}
 			current, err := os.ReadFile(binding.File)
@@ -299,7 +349,7 @@ func (p *plan) apply(id string) error {
 		}
 	}()
 	for path, data := range pending.Files {
-		if err := safeLocalFile(path); err != nil {
+		if err := p.safeFile(path); err != nil {
 			return err
 		}
 		current, err := os.ReadFile(path)
@@ -343,7 +393,7 @@ func (p *plan) apply(id string) error {
 		}
 	}
 	for index, stage := range stages {
-		if err := safeLocalFile(stage.path); err != nil {
+		if err := p.safeFile(stage.path); err != nil {
 			return fmt.Errorf("%dファイル適用後に失敗しました: %w", index, err)
 		}
 		current, err := os.ReadFile(stage.path)
