@@ -26,7 +26,7 @@ func scanLinkedDirectory(root string) ([]localFile, error) {
 			}
 			return nil
 		}
-		if !entry.Type().IsRegular() || privateName.MatchString(entry.Name()) {
+		if !entry.Type().IsRegular() || privateName.MatchString(entry.Name()) || strings.HasPrefix(entry.Name(), ".config-sup-") {
 			return nil
 		}
 		info, err := entry.Info()

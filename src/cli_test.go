@@ -9,6 +9,120 @@ import (
 	"testing"
 )
 
+func TestDiscoveryDoesNotOfferBackups(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".config", "example")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"settings.json", ".config-sup-backup-old"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(`{"mode":"auto"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := scanLocal()
+	if err != nil || len(files) != 1 || files[0].Path != filepath.Join(root, "settings.json") {
+		t.Fatalf("backup offered: %#v %v", files, err)
+	}
+}
+
+func TestMultipleFilesShareOneSettingsList(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".config", "example")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	jsonPath, tomlPath := filepath.Join(root, "config.json"), filepath.Join(root, "settings.toml")
+	if err := os.WriteFile(jsonPath, []byte(`{"enabled":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tomlPath, []byte("mode = \"auto\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	finder := func(local []localFile, _ string) ([]int, error) {
+		ids := []int{}
+		for _, path := range []string{jsonPath, tomlPath} {
+			found := false
+			for _, file := range local {
+				if file.Path == path {
+					ids = append(ids, file.ID)
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("missing file %s", path)
+			}
+		}
+		return ids, nil
+	}
+	var out bytes.Buffer
+	if err := runCLI("example", strings.NewReader("y\n1,2\n2\nN\nmanual\nN\n"), &out, finder); err != nil {
+		t.Fatal(err)
+	}
+	listing := strings.SplitN(strings.SplitN(out.String(), "設定項目  現在の内容\n", 2)[1], "変更する項目の番号", 2)[0]
+	if !strings.Contains(listing, "enabled = true") || !strings.Contains(listing, `mode = "auto"`) || strings.Contains(listing, jsonPath) || strings.Contains(listing, tomlPath) {
+		t.Fatalf("listing: %s", listing)
+	}
+	if content, _ := os.ReadFile(tomlPath); string(content) != "mode = \"auto\"\n" {
+		t.Fatal("wrote without approval")
+	}
+	out.Reset()
+	if err := runCLI("example", strings.NewReader("y\n1,2\n2\nN\nmanual\ny\n"), &out, finder); err != nil {
+		t.Fatal(err)
+	}
+	if content, _ := os.ReadFile(tomlPath); string(content) != "mode = \"manual\"\n" {
+		t.Fatalf("wrong target: %s", content)
+	}
+	if content, _ := os.ReadFile(jsonPath); string(content) != `{"enabled":true}` {
+		t.Fatalf("changed unrelated file: %s", content)
+	}
+}
+
+func TestMultipleFileSelectionRejectsDuplicates(t *testing.T) {
+	var out bytes.Buffer
+	local := []localFile{{Path: "one"}, {Path: "two"}}
+	for _, answer := range []string{"", "0", "1,1", "1,3", "all"} {
+		if _, err := chooseFiles(bufio.NewReader(strings.NewReader(answer+"\n")), &out, local, []int{0, 1}); err == nil {
+			t.Fatalf("accepted %q", answer)
+		}
+		out.Reset()
+	}
+}
+
+func TestDuplicateSettingNamesCannotSilentlyPickOneFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".config", "example")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"config.json", "settings.json"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(`{"mode":"auto"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	err := runCLI("example", strings.NewReader("y\n1,2\n1\n"), &out, func(local []localFile, _ string) ([]int, error) {
+		ids := []int{}
+		for _, file := range local {
+			if filepath.Dir(file.Path) == root {
+				ids = append(ids, file.ID)
+			}
+		}
+		return ids, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "同名項目") || !strings.Contains(out.String(), "(重複)") {
+		t.Fatalf("ambiguity not blocked: %v / %s", err, out.String())
+	}
+	for _, name := range []string{"config.json", "settings.json"} {
+		if data, _ := os.ReadFile(filepath.Join(root, name)); string(data) != `{"mode":"auto"}` {
+			t.Fatalf("ambiguous file changed: %s", data)
+		}
+	}
+}
+
 func TestCLIOnlyAppliesAfterHumanY(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -51,7 +165,7 @@ func TestTUIPicksOnlyListedSetting(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	index, err := pickTUI([]localValue{{Path: []string{"first"}, Value: "a"}, {Path: []string{"second"}, Value: "b"}})
+	index, err := pickTUI([]localValue{{Path: []string{"first"}, Value: "a"}, {Path: []string{"second"}, Value: "b"}}, nil)
 	if err != nil || index != 1 {
 		t.Fatalf("pick: %d %v", index, err)
 	}

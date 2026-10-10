@@ -73,13 +73,17 @@ func displayPath(path []string) string {
 	quoted := strconv.Quote(strings.Join(path, "."))
 	return quoted[1 : len(quoted)-1]
 }
-func pickTUI(values []localValue) (int, error) {
+func pickTUI(values []localValue, counts map[string]int) (int, error) {
 	if _, err := exec.LookPath("fzf"); err != nil {
 		return 0, errors.New("TUIにはfzfが必要です。番号式CLIは --cli で起動できます")
 	}
 	rows := make([]string, len(values))
 	for index, value := range values {
-		rows[index] = fmt.Sprintf("%d. %s = %s", index+1, displayPath(value.Path), printable(value.Value))
+		suffix := ""
+		if counts[fmt.Sprintf("%q", value.Path)] > 1 {
+			suffix = " (重複)"
+		}
+		rows[index] = fmt.Sprintf("%d. %s = %s%s", index+1, displayPath(value.Path), printable(value.Value), suffix)
 	}
 	cmd := exec.Command("fzf", "--prompt", "設定項目> ", "--height", "~60%", "--layout", "reverse", "--no-multi")
 	cmd.Stdin = strings.NewReader(strings.Join(rows, "\n") + "\n")
@@ -95,33 +99,138 @@ func pickTUI(values []localValue) (int, error) {
 	}
 	return 0, errors.New("不正な選択です")
 }
-func chooseFile(reader *bufio.Reader, out io.Writer, local []localFile, ids []int) (int, error) {
+func chooseFiles(reader *bufio.Reader, out io.Writer, local []localFile, ids []int) ([]int, error) {
 	if len(ids) == 0 {
-		return 0, errors.New("設定ファイルの候補が見つかりませんでした")
+		return nil, errors.New("設定ファイルの候補が見つかりませんでした")
 	}
-	if len(ids) > 1 {
-		fmt.Fprintln(out, "対象を特定できません。候補:")
-		for index, candidate := range ids {
-			if candidate < 0 || candidate >= len(local) {
-				return 0, errors.New("不正な候補です")
-			}
-			fmt.Fprintf(out, "%d. %q\n", index+1, local[candidate].Path)
+	seen := map[int]bool{}
+	for _, id := range ids {
+		if id < 0 || id >= len(local) || seen[id] {
+			return nil, errors.New("不正な候補です")
 		}
-		fmt.Fprint(out, "番号（それ以外は中止）: ")
-		choice, err := answer(reader)
+		seen[id] = true
+	}
+	if len(ids) == 1 {
+		return ids, nil
+	}
+	fmt.Fprintln(out, "使用する設定ファイルを選択:")
+	for index, id := range ids {
+		fmt.Fprintf(out, "%d. %q\n", index+1, local[id].Path)
+	}
+	fmt.Fprint(out, "番号（複数は 1,2 のように指定。空欄は中止）: ")
+	choice, err := answer(reader)
+	if err != nil {
+		return nil, err
+	}
+	selected := []int{}
+	seen = map[int]bool{}
+	for _, part := range strings.Split(choice, ",") {
+		number, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || number < 1 || number > len(ids) || seen[number] {
+			return nil, errors.New("選択を中止しました")
+		}
+		seen[number] = true
+		selected = append(selected, ids[number-1])
+	}
+	return selected, nil
+}
+
+type selectedFile struct {
+	file   localFile
+	data   []byte
+	values []localValue
+}
+
+func loadSelected(reader *bufio.Reader, out io.Writer, candidate localFile, request string, find func([]localFile, string) ([]int, error)) ([]selectedFile, error) {
+	files := []localFile{candidate}
+	if candidate.Link {
+		alias := candidate.Path
+		resolved, err := filepath.EvalSymlinks(alias)
 		if err != nil {
-			return 0, err
+			return nil, fmt.Errorf("リンク先を確認できません: %w", err)
 		}
-		number, err := strconv.Atoi(choice)
-		if err != nil || number < 1 || number > len(ids) {
-			return 0, errors.New("中止しました")
+		info, err := os.Lstat(resolved)
+		if err != nil {
+			return nil, err
 		}
-		ids = []int{ids[number-1]}
+		root := ""
+		if info.IsDir() {
+			root = resolved
+			if err := safeApprovedDirectory(root); err != nil {
+				return nil, err
+			}
+			approved, err := yes(reader, out, fmt.Sprintf("設定ディレクトリへのリンク %q の参照先 %q 内だけを探索し、ファイル名をPiモデルへ送信してよいですか？ 内容はまだ読みません", alias, root))
+			if err != nil {
+				return nil, err
+			}
+			if !approved {
+				return nil, errors.New("リンク先を探索せずに終了しました")
+			}
+			directory, err := scanLinkedDirectory(root)
+			if err != nil {
+				return nil, err
+			}
+			if len(directory) == 0 {
+				return nil, errors.New("リンク先に100KB以下の設定候補がありません")
+			}
+			ids, err := find(directory, request)
+			if err != nil {
+				return nil, err
+			}
+			ids, err = chooseFiles(reader, out, directory, ids)
+			if err != nil {
+				return nil, err
+			}
+			files = nil
+			for _, id := range ids {
+				files = append(files, directory[id])
+			}
+		} else {
+			files[0].Path = resolved
+		}
+		for index := range files {
+			files[index].Link = false
+			files[index].LinkAlias, files[index].LinkRoot, files[index].Approved = alias, root, true
+		}
 	}
-	if ids[0] < 0 || ids[0] >= len(local) {
-		return 0, errors.New("不正な候補です")
+	selected := []selectedFile{}
+	for _, file := range files {
+		if file.Approved {
+			if err := safeApprovedTarget(file.Path); err != nil {
+				return nil, err
+			}
+			approved, err := yes(reader, out, fmt.Sprintf("設定リンク %q 経由のファイル %q を読み、最終確認後にこのファイルだけを書き換えてよいですか？ 内容のモデル送信は別途確認します", file.LinkAlias, file.Path))
+			if err != nil {
+				return nil, err
+			}
+			if !approved {
+				return nil, errors.New("リンク先を読まずに終了しました")
+			}
+			if err := approvedLinkStillPointsTo(file.LinkAlias, file.LinkRoot, file.Path); err != nil {
+				return nil, err
+			}
+		} else if err := safeLocalFile(file.Path); err != nil {
+			return nil, err
+		}
+		data, err := os.ReadFile(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > 100_000 {
+			return nil, errors.New("設定ファイルは100KB以下に限ります")
+		}
+		values, err := inspectValues(file.Path, data)
+		if err != nil || len(values) == 0 {
+			fmt.Fprintf(out, "候補 %q は安全に編集できる項目がないため除外しました\n", file.Path)
+			continue
+		}
+		file.Fields = nil
+		for _, value := range values {
+			file.Fields = append(file.Fields, localField{Path: value.Path, Type: value.Type})
+		}
+		selected = append(selected, selectedFile{file, data, values})
 	}
-	return ids[0], nil
+	return selected, nil
 }
 func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error), tui bool, appFinder func([]localFile, string) ([]int, error)) error {
 	reader := bufio.NewReader(in)
@@ -210,100 +319,55 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 			return errors.New("アプリ本体は見つかりましたが、初期範囲に対応する編集可能な設定ファイルが見つかりませんでした。アプリ本体は変更しません")
 		}
 	}
-	id, err := chooseFile(reader, out, local, ids)
+	ids, err = chooseFiles(reader, out, local, ids)
 	if err != nil {
 		return err
 	}
-	candidate := local[id]
-	if candidate.Link {
-		alias := candidate.Path
-		resolved, err := filepath.EvalSymlinks(alias)
-		if err != nil {
-			return fmt.Errorf("リンク先を確認できません: %w", err)
-		}
-		info, err := os.Lstat(resolved)
+	selected := []selectedFile{}
+	for _, id := range ids {
+		loaded, err := loadSelected(reader, out, local[id], request, find)
 		if err != nil {
 			return err
 		}
-		root := ""
-		if info.IsDir() {
-			root = resolved
-			if err := safeApprovedDirectory(root); err != nil {
-				return err
-			}
-			approved, err := yes(reader, out, fmt.Sprintf("設定ディレクトリへのリンク %q の参照先 %q 内だけを探索し、ファイル名をPiモデルへ送信してよいですか？ 内容はまだ読みません", alias, root))
-			if err != nil {
-				return err
-			}
-			if !approved {
-				return errors.New("リンク先を探索せずに終了しました")
-			}
-			local, err = scanLinkedDirectory(root)
-			if err != nil {
-				return err
-			}
-			if len(local) == 0 {
-				return errors.New("リンク先に100KB以下の設定候補がありません")
-			}
-			ids, err := find(local, request)
-			if err != nil {
-				return err
-			}
-			id, err = chooseFile(reader, out, local, ids)
-			if err != nil {
-				return err
-			}
-			candidate = local[id]
-			resolved = candidate.Path
-		}
-		if err := safeApprovedTarget(resolved); err != nil {
-			return err
-		}
-		approved, err := yes(reader, out, fmt.Sprintf("設定リンク %q 経由のファイル %q を読み、最終確認後にこのファイルだけを書き換えてよいですか？ 内容のモデル送信は別途確認します", alias, resolved))
-		if err != nil {
-			return err
-		}
-		if !approved {
-			return errors.New("リンク先を読まずに終了しました")
-		}
-		candidate.Path, candidate.LinkAlias, candidate.LinkRoot, candidate.Approved = resolved, alias, root, true
-		local[id] = candidate
+		selected = append(selected, loaded...)
 	}
-	if candidate.Approved {
-		if err := safeApprovedTarget(candidate.Path); err != nil {
-			return err
-		}
-		if err := approvedLinkStillPointsTo(candidate.LinkAlias, candidate.LinkRoot, candidate.Path); err != nil {
-			return err
-		}
-	} else if err := safeLocalFile(candidate.Path); err != nil {
-		return err
+	local = nil
+	type setting struct {
+		id    int
+		value localValue
+		data  []byte
 	}
-	data, err := os.ReadFile(candidate.Path)
-	if err != nil {
-		return err
-	}
-	values, err := inspectValues(candidate.Path, data)
-	if err != nil {
-		return err
+	settings := []setting{}
+	values := []localValue{}
+	for _, selection := range selected {
+		selection.file.ID = len(local)
+		local = append(local, selection.file)
+		for _, value := range selection.values {
+			settings = append(settings, setting{selection.file.ID, value, selection.data})
+			values = append(values, value)
+		}
 	}
 	if len(values) == 0 {
 		return errors.New("安全に編集できる設定項目がありません")
 	}
-	local[id].Fields = nil
+	counts := map[string]int{}
 	for _, value := range values {
-		local[id].Fields = append(local[id].Fields, localField{Path: value.Path, Type: value.Type})
+		counts[fmt.Sprintf("%q", value.Path)]++
 	}
 	index := 0
 	if tui {
-		index, err = pickTUI(values)
+		index, err = pickTUI(values, counts)
 		if err != nil {
 			return err
 		}
 	} else {
 		fmt.Fprintln(out, "設定項目  現在の内容")
 		for number, value := range values {
-			fmt.Fprintf(out, "%d. %s = %s\n", number+1, displayPath(value.Path), printable(value.Value))
+			suffix := ""
+			if counts[fmt.Sprintf("%q", value.Path)] > 1 {
+				suffix = " (重複)"
+			}
+			fmt.Fprintf(out, "%d. %s = %s%s\n", number+1, displayPath(value.Path), printable(value.Value), suffix)
 		}
 		fmt.Fprint(out, "変更する項目の番号（空欄で終了）: ")
 		choice, err := answer(reader)
@@ -319,7 +383,12 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 		}
 		index = number - 1
 	}
-	item := values[index]
+	item := settings[index].value
+	if counts[fmt.Sprintf("%q", item.Path)] > 1 {
+		return errors.New("同名項目が複数の設定ファイルにあるため編集できません。選択ファイルを絞って再実行してください")
+	}
+	candidate := local[settings[index].id]
+	data := settings[index].data
 	var choices []any
 	if item.Type != "boolean" {
 		roots := []string{filepath.Dir(candidate.Path)}

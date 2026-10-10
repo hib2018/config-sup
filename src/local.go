@@ -94,7 +94,7 @@ func scanLocal() ([]localFile, error) {
 				}
 				return nil
 			}
-			if len(paths) < 5000 && (entry.Type().IsRegular() || entry.Type()&os.ModeSymlink != 0) && !privateName.MatchString(entry.Name()) {
+			if len(paths) < 5000 && (entry.Type().IsRegular() || entry.Type()&os.ModeSymlink != 0) && !privateName.MatchString(entry.Name()) && !strings.HasPrefix(entry.Name(), ".config-sup-") {
 				paths = append(paths, path)
 			}
 			return nil
