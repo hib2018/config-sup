@@ -75,7 +75,7 @@ func displayPath(path []string) string {
 }
 func pickTUI(values []localValue) (int, error) {
 	if _, err := exec.LookPath("fzf"); err != nil {
-		return 0, errors.New("TUIにはfzfが必要です。CLIは --tui なしで起動できます")
+		return 0, errors.New("TUIにはfzfが必要です。番号式CLIは --cli で起動できます")
 	}
 	rows := make([]string, len(values))
 	for index, value := range values {
