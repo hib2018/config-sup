@@ -26,6 +26,7 @@ type localFile struct {
 	Link      bool         `json:"link,omitempty"`
 	Approved  bool         `json:"-"`
 	LinkAlias string       `json:"-"`
+	LinkRoot  string       `json:"-"`
 }
 
 var privateName = regexp.MustCompile(`(?i)(auth|token|secret|credential|password|keychain|session)`)

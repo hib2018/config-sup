@@ -95,6 +95,34 @@ func pickTUI(values []localValue) (int, error) {
 	}
 	return 0, errors.New("不正な選択です")
 }
+func chooseFile(reader *bufio.Reader, out io.Writer, local []localFile, ids []int) (int, error) {
+	if len(ids) == 0 {
+		return 0, errors.New("設定ファイルの候補が見つかりませんでした")
+	}
+	if len(ids) > 1 {
+		fmt.Fprintln(out, "対象を特定できません。候補:")
+		for index, candidate := range ids {
+			if candidate < 0 || candidate >= len(local) {
+				return 0, errors.New("不正な候補です")
+			}
+			fmt.Fprintf(out, "%d. %q\n", index+1, local[candidate].Path)
+		}
+		fmt.Fprint(out, "番号（それ以外は中止）: ")
+		choice, err := answer(reader)
+		if err != nil {
+			return 0, err
+		}
+		number, err := strconv.Atoi(choice)
+		if err != nil || number < 1 || number > len(ids) {
+			return 0, errors.New("中止しました")
+		}
+		ids = []int{ids[number-1]}
+	}
+	if ids[0] < 0 || ids[0] >= len(local) {
+		return 0, errors.New("不正な候補です")
+	}
+	return ids[0], nil
+}
 func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localFile, string) ([]int, error), tui bool, appFinder func([]localFile, string) ([]int, error)) error {
 	reader := bufio.NewReader(in)
 	if request == "" {
@@ -182,54 +210,71 @@ func runWorkflow(request string, in io.Reader, out io.Writer, find func([]localF
 			return errors.New("アプリ本体は見つかりましたが、初期範囲に対応する編集可能な設定ファイルが見つかりませんでした。アプリ本体は変更しません")
 		}
 	}
-	id := ids[0]
-	if len(ids) > 1 {
-		fmt.Fprintln(out, "対象を特定できません。候補:")
-		for index, candidate := range ids {
-			if candidate < 0 || candidate >= len(local) {
-				return errors.New("不正な候補です")
-			}
-			fmt.Fprintf(out, "%d. %q\n", index+1, local[candidate].Path)
-		}
-		fmt.Fprint(out, "番号（それ以外は中止）: ")
-		choice, err := answer(reader)
-		if err != nil {
-			return err
-		}
-		number, err := strconv.Atoi(choice)
-		if err != nil || number < 1 || number > len(ids) {
-			return errors.New("中止しました")
-		}
-		id = ids[number-1]
-	}
-	if id < 0 || id >= len(local) {
-		return errors.New("不正な候補です")
+	id, err := chooseFile(reader, out, local, ids)
+	if err != nil {
+		return err
 	}
 	candidate := local[id]
 	if candidate.Link {
-		resolved, err := filepath.EvalSymlinks(candidate.Path)
+		alias := candidate.Path
+		resolved, err := filepath.EvalSymlinks(alias)
 		if err != nil {
 			return fmt.Errorf("リンク先を確認できません: %w", err)
+		}
+		info, err := os.Lstat(resolved)
+		if err != nil {
+			return err
+		}
+		root := ""
+		if info.IsDir() {
+			root = resolved
+			if err := safeApprovedDirectory(root); err != nil {
+				return err
+			}
+			approved, err := yes(reader, out, fmt.Sprintf("設定ディレクトリへのリンク %q の参照先 %q 内だけを探索し、ファイル名をPiモデルへ送信してよいですか？ 内容はまだ読みません", alias, root))
+			if err != nil {
+				return err
+			}
+			if !approved {
+				return errors.New("リンク先を探索せずに終了しました")
+			}
+			local, err = scanLinkedDirectory(root)
+			if err != nil {
+				return err
+			}
+			if len(local) == 0 {
+				return errors.New("リンク先に100KB以下の設定候補がありません")
+			}
+			ids, err := find(local, request)
+			if err != nil {
+				return err
+			}
+			id, err = chooseFile(reader, out, local, ids)
+			if err != nil {
+				return err
+			}
+			candidate = local[id]
+			resolved = candidate.Path
 		}
 		if err := safeApprovedTarget(resolved); err != nil {
 			return err
 		}
-		approved, err := yes(reader, out, fmt.Sprintf("設定リンク %q の参照先 %q（初期範囲外の可能性あり）を読み、承認後には参照先だけを書き換えてよいですか？ 内容のモデル送信は別途確認します", candidate.Path, resolved))
+		approved, err := yes(reader, out, fmt.Sprintf("設定リンク %q 経由のファイル %q を読み、最終確認後にこのファイルだけを書き換えてよいですか？ 内容のモデル送信は別途確認します", alias, resolved))
 		if err != nil {
 			return err
 		}
 		if !approved {
 			return errors.New("リンク先を読まずに終了しました")
 		}
-		candidate.Path, candidate.LinkAlias, candidate.Approved = resolved, candidate.Path, true
+		candidate.Path, candidate.LinkAlias, candidate.LinkRoot, candidate.Approved = resolved, alias, root, true
 		local[id] = candidate
 	}
 	if candidate.Approved {
 		if err := safeApprovedTarget(candidate.Path); err != nil {
 			return err
 		}
-		if current, err := filepath.EvalSymlinks(candidate.LinkAlias); err != nil || current != candidate.Path {
-			return errors.New("承認後にリンク先が変更されました")
+		if err := approvedLinkStillPointsTo(candidate.LinkAlias, candidate.LinkRoot, candidate.Path); err != nil {
+			return err
 		}
 	} else if err := safeLocalFile(candidate.Path); err != nil {
 		return err

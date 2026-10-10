@@ -50,6 +50,7 @@ type plan struct {
 	Pending      *previewState
 	ApprovedFile string
 	LinkAlias    string
+	LinkRoot     string
 }
 
 func newToken() (string, error) {
@@ -96,7 +97,9 @@ func safeLocalFile(path string) error {
 	return errors.New("対象が許可された設定ディレクトリ外です")
 }
 
-func safeApprovedTarget(path string) error {
+func safeApprovedTarget(path string) error    { return safeApprovedPath(path, false) }
+func safeApprovedDirectory(path string) error { return safeApprovedPath(path, true) }
+func safeApprovedPath(path string, directory bool) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -117,9 +120,32 @@ func safeApprovedTarget(path string) error {
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("リンク先に別のシンボリックリンクが含まれます")
 		}
-		if i == len(parts)-1 && (!info.Mode().IsRegular() || info.Size() > 100_000) {
-			return errors.New("リンク先は100KB以下の通常ファイルに限ります")
+		if i == len(parts)-1 {
+			if directory && !info.IsDir() {
+				return errors.New("リンク先はディレクトリではありません")
+			}
+			if !directory && (!info.Mode().IsRegular() || info.Size() > 100_000) {
+				return errors.New("リンク先のファイルは100KB以下に限ります")
+			}
 		}
+	}
+	return nil
+}
+func approvedLinkStillPointsTo(alias, root, file string) error {
+	want := file
+	if root != "" {
+		if err := safeApprovedDirectory(root); err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, file)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return errors.New("選択ファイルが承認範囲外です")
+		}
+		want = root
+	}
+	resolved, err := filepath.EvalSymlinks(alias)
+	if err != nil || resolved != want {
+		return errors.New("承認後にリンク先が変更されました")
 	}
 	return nil
 }
@@ -130,11 +156,7 @@ func (p *plan) safeFile(path string) error {
 	if err := safeApprovedTarget(path); err != nil {
 		return err
 	}
-	resolved, err := filepath.EvalSymlinks(p.LinkAlias)
-	if err != nil || resolved != path {
-		return errors.New("承認後にリンク先が変更されました")
-	}
-	return nil
+	return approvedLinkStillPointsTo(p.LinkAlias, p.LinkRoot, path)
 }
 
 func preparePlan(files []source, local []localFile) (*plan, error) {
@@ -155,7 +177,7 @@ func preparePlan(files []source, local []localFile) (*plan, error) {
 				continue
 			}
 			if candidate.Approved {
-				p.ApprovedFile, p.LinkAlias = candidate.Path, candidate.LinkAlias
+				p.ApprovedFile, p.LinkAlias, p.LinkRoot = candidate.Path, candidate.LinkAlias, candidate.LinkRoot
 			}
 			if p.safeFile(candidate.Path) != nil {
 				field.Target = nil
